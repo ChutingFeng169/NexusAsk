@@ -52,3 +52,5 @@ Thumbs.db
 # ---- User accounts and conversation history ----
 users.json
 conversations/
+memory/
+library/
