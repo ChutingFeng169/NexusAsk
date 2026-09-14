@@ -6,7 +6,7 @@ httpx==0.28.1
 
 # LangChain (legacy 0.1.x stack used by app.py)
 langchain==0.1.20
-langchain-classic==1.0.3          # provides langchain.chains + langchain.memory
+
 langchain-community==0.0.38       # loaders + Chroma vectorstore wrapper
 langchain-core==0.1.53
 langchain-text-splitters==0.0.2
