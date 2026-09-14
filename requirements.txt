@@ -1,4 +1,4 @@
-# Direct dependencies for DocChat (pinned to the versions tested in this project's venv)
+# Direct dependencies for NexusAsk (pinned to the versions tested in this project's venv)
 # Core app
 streamlit==1.55.0
 python-dotenv==1.2.2
@@ -32,3 +32,7 @@ PyYAML==6.0.3
 
 # Semantic cache (local embeddings) — added for in-app semantic cache at threshold 0.92
 sentence-transformers==2.7.0
+
+# Agentic RAG tools (web search, external knowledge, math) — native tool-calling
+duckduckgo-search==8.1.1            # search_web tool
+wikipedia==1.4.0                    # wikipedia_search tool
