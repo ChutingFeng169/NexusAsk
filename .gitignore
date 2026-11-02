@@ -54,3 +54,5 @@ users.json
 conversations/
 memory/
 library/
+search_history/
+user_settings/

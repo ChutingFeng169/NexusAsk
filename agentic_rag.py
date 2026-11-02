@@ -1,29 +1,85 @@
 """
 agentic_rag.py — Agentic RAG with native tool-calling (2026 pattern), legacy-stack-safe.
 
-Pipeline: query rewrite -> native tool-calling loop (search_docs / search_web) ->
+Pipeline: [optional] query rewrite -> native tool-calling loop (search_docs / search_web) ->
 faithfulness self-correction. Native tool-calling via the DeepSeek proxy (confirmed:
 emits real tool_calls). No langgraph (incompatible with pinned langchain-core 0.1.53);
 the agent loop is plain Python with native function-calling over httpx.
+
+Reliability design
+------------------
+* ONE retry layer: every model call goes through rate_limit_fallback.retry_call
+  (timeouts, 429, 5xx, network errors; exponential backoff + jitter; logged).
+* This module never touches Streamlit. It reports progress with on_progress(event);
+  retries show up as {"type": "retry", "n", "total", "wait", "reason"}.
+* The query rewrite is a nice-to-have: it is skipped when it cannot help, uses a
+  short timeout, never retries, and falls back to the original question.
 """
 import json
+import logging
 import os
+import threading
+import time
+from contextlib import contextmanager
 
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
+import rate_limit_fallback as rlf
 from simple_eval import simple_similarity  # reuse faithfulness (embedding sim)
 from langsmith import traceable  # LangSmith tracing for the agentic (httpx) calls
+
+logger = logging.getLogger("nexus.agent")
 
 API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL = os.getenv("OPENAI_BASE_URL", "").rstrip("/")
 MODEL = os.getenv("LLM_MODEL", "")
 
+# Query rewrite settings (env-overridable)
+REWRITE_TIMEOUT_S = float(os.getenv("REWRITE_TIMEOUT_S", "4"))
+REWRITE_MIN_CHARS = int(os.getenv("REWRITE_MIN_CHARS", "15"))
+
 _client = httpx.Client(
     base_url=BASE_URL,
     headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-    timeout=httpx.Timeout(120.0, connect=30.0),
+    timeout=httpx.Timeout(rlf.LLM_TIMEOUT_S, connect=rlf.CONNECT_TIMEOUT_S),
 )
+
+# ---------------- retry events -> progress events ----------------
+_tls = threading.local()
+
+
+def _emit_retry(ev):
+    cb = getattr(_tls, "on_retry", None)
+    if cb:
+        try:
+            cb(ev)
+        except Exception:
+            pass
+
+
+def _retry_to_progress(on_progress):
+    """Turn rate_limit_fallback retry events into one simple {"type": "retry"} progress event."""
+    def convert(ev):
+        if ev.get("type") in ("rate_limited", "retrying"):
+            on_progress({
+                "type": "retry",
+                "n": ev["n"],
+                "total": ev.get("total"),
+                "wait": ev.get("wait", 0.0),
+                "reason": ev.get("reason", "rate_limit"),
+            })
+    return convert
+
+
+@contextmanager
+def _retry_events(on_progress):
+    """While active, retries inside llm_chat / llm_chat_stream are reported via on_progress."""
+    _tls.on_retry = _retry_to_progress(on_progress) if on_progress else None
+    try:
+        yield
+    finally:
+        _tls.on_retry = None
 
 
 def _trim_chunks(inputs):
@@ -35,30 +91,45 @@ def _trim_chunks(inputs):
     return inputs
 
 
+# ---------------- model calls ----------------
+def _request_timeout(timeout):
+    """Per-attempt timeout, capped to what is left of the overall retry budget."""
+    t = float(timeout if timeout is not None else rlf.LLM_TIMEOUT_S)
+    left = rlf.time_left()
+    if left is not None:
+        t = min(t, left)
+    return httpx.Timeout(t, connect=min(t, rlf.CONNECT_TIMEOUT_S))
+
+
+def _post_chat(payload, timeout=None):
+    resp = _client.post("/chat/completions", json=payload, timeout=_request_timeout(timeout))
+    rlf.raise_for_status_with_retry_after(resp)
+    return resp.json()["choices"][0]["message"]
+
+
 @traceable(run_type="llm", name="llm_chat")
-def llm_chat(messages, tools=None, temperature=0):
-    """Native tool-calling chat. Returns {'content': str, 'tool_calls': list|None}."""
+def llm_chat(messages, tools=None, temperature=0, timeout=None, max_attempts=None):
+    """Native tool-calling chat. Returns {'content': str, 'tool_calls': list|None}.
+    timeout: per-attempt seconds (default LLM_TIMEOUT_S). max_attempts=1 means no retry."""
     payload = {"model": MODEL, "messages": messages, "temperature": temperature}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-    resp = _client.post("/chat/completions", json=payload)
-    resp.raise_for_status()
-    msg = resp.json()["choices"][0]["message"]
+    t0 = time.perf_counter()
+    msg = rlf.retry_call(_post_chat, payload, timeout, max_attempts=max_attempts, on_progress=_emit_retry)
+    logger.info("llm_chat ok in %.1fs", time.perf_counter() - t0)
     return {"content": msg.get("content") or "", "tool_calls": msg.get("tool_calls")}
 
 
-def llm_chat_stream(messages, tools=None, temperature=0, _out=None):
-    """Streaming native chat (stream=True + SSE). Yields content deltas token-by-token.
-    If _out (a dict) is passed, the accumulated tool_calls are written to _out['tool_calls']
-    after the stream ends (so a tool-calling loop can drive itself)."""
+def _stream_once(messages, tools, temperature, _out, timeout=None):
+    """One streaming attempt. Yields content deltas; fills _out['tool_calls'] at the end."""
     payload = {"model": MODEL, "messages": messages, "temperature": temperature, "stream": True, "stream_options": {"include_usage": True}}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
     tcs_acc = []
-    with _client.stream("POST", "/chat/completions", json=payload) as resp:
-        resp.raise_for_status()
+    with _client.stream("POST", "/chat/completions", json=payload, timeout=_request_timeout(timeout)) as resp:
+        rlf.raise_for_status_with_retry_after(resp)
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -95,6 +166,47 @@ def llm_chat_stream(messages, tools=None, temperature=0, _out=None):
                         tcs_acc[idx]["function"]["arguments"] += fn["arguments"]
     if _out is not None:
         _out["tool_calls"] = tcs_acc if any(tc["function"]["name"] for tc in tcs_acc) else None
+
+
+def llm_chat_stream(messages, tools=None, temperature=0, _out=None):
+    """Streaming native chat (stream=True + SSE). Yields content deltas token-by-token.
+    If _out (a dict) is passed, the accumulated tool_calls are written to _out['tool_calls']
+    after the stream ends (so a tool-calling loop can drive itself).
+    Retries only while NOTHING has been shown to the user yet (timeout / 429 / 5xx when the
+    stream opens); once tokens have been yielded, an error is raised instead of restarting."""
+    total = rlf.MAX_RETRIES
+    t_start = time.monotonic()
+    for attempt in range(1, total + 1):
+        started = False
+        left = rlf.LLM_TOTAL_TIMEOUT_S - (time.monotonic() - t_start)
+        try:
+            for piece in _stream_once(messages, tools, temperature, _out, timeout=min(rlf.LLM_TIMEOUT_S, max(left, 0.5))):
+                started = True
+                yield piece
+            return
+        except Exception as exc:
+            wait = rlf.backoff_seconds(attempt, exc)
+            left = rlf.LLM_TOTAL_TIMEOUT_S - (time.monotonic() - t_start) - wait
+            if started or attempt >= total or not rlf._is_retryable(exc) or left < rlf.MIN_ATTEMPT_S:
+                logger.error("llm_chat_stream failed (attempt %d/%d, started=%s): %s", attempt, total, started, exc)
+                raise
+            logger.warning("llm_chat_stream attempt %d/%d failed (%s: %s); backing off %.2fs",
+                           attempt, total, rlf._reason(exc), exc, wait)
+            ev_type = "rate_limited" if isinstance(exc, rlf.RateLimitError) else "retrying"
+            _emit_retry({"type": ev_type, "n": attempt, "total": total, "wait": wait, "reason": rlf._reason(exc)})
+            rlf._SLEEP(wait)
+
+
+# ---------------- response language (thread-local) ----------------
+
+def set_response_language(lang):
+    """Per-session answer language (thread-local). None / "auto" = match the user's question."""
+    _tls.lang = lang if lang and lang != "auto" else None
+
+
+def _lang_line():
+    lang = getattr(_tls, "lang", None)
+    return f"\n\nAlways write your final answer in {lang}." if lang else ""
 
 
 # ---------------- tools ----------------
@@ -156,13 +268,34 @@ def wikipedia_search(query, sentences=3):
 
 
 # ---------------- agentic steps ----------------
-def rewrite_query(question):
-    """LLM rewrites the question for better retrieval."""
-    msg = llm_chat([
-        {"role": "system", "content": "Rewrite the user's question to be optimal for document retrieval. Keep the same language. Output ONLY the rewritten question."},
-        {"role": "user", "content": question},
-    ])
+def should_rewrite(question, chunks):
+    """Rewriting only helps document retrieval. Skip it when there are no uploaded documents
+    (web / wikipedia / calculator build their own queries) or the question is very short."""
+    return bool(chunks) and len((question or "").strip()) >= REWRITE_MIN_CHARS
+
+
+def rewrite_query(question, chunks=None):
+    """LLM rewrites the question for better retrieval.
+    Nice-to-have only: short timeout, no retry, falls back to the original question.
+    Pass chunks to let it skip itself when rewriting cannot help."""
+    if chunks is not None and not should_rewrite(question, chunks):
+        return question
+    try:
+        msg = llm_chat([
+            {"role": "system", "content": "Rewrite the user's question to be optimal for document retrieval. Keep the same language. Output ONLY the rewritten question."},
+            {"role": "user", "content": question},
+        ], timeout=REWRITE_TIMEOUT_S, max_attempts=1)
+    except Exception as e:
+        logger.warning("query rewrite skipped (%s: %s); using the original question", type(e).__name__, e)
+        return question
     return (msg["content"].strip().strip('"') or question)
+
+
+def _user_message(question, rq):
+    text = f"Question: {question}"
+    if rq and rq != question:
+        text += f"\n(Rewritten for retrieval: {rq})"
+    return {"role": "user", "content": text}
 
 
 def grade_relevance(question, passages):
@@ -202,7 +335,7 @@ def guard_input(text):
     return False, ""
 
 
-DISCLAIMER = "\n\n⚠️ 本回答由AI生成，仅供参考。"
+DISCLAIMER = ""  # moved to a CSS element below the chat input (see style.css)
 
 
 def append_disclaimer(answer):
@@ -220,36 +353,42 @@ TOOLS = [
 
 def _run_tool(name, args, chunks, k):
     q = args.get("query", "")
-    if name == "search_docs":
-        return search_docs(q, chunks, k)
-    if name == "search_web":
-        return search_web(q)
-    if name == "calculator":
-        return calculator(args.get("expression", ""))
-    if name == "wikipedia_search":
-        return wikipedia_search(q)
-    return f"unknown tool: {name}"
+    t0 = time.perf_counter()
+    try:
+        if name == "search_docs":
+            return search_docs(q, chunks, k)
+        if name == "search_web":
+            return search_web(q)
+        if name == "calculator":
+            return calculator(args.get("expression", ""))
+        if name == "wikipedia_search":
+            return wikipedia_search(q)
+        return f"unknown tool: {name}"
+    finally:
+        logger.info("tool %s finished in %.1fs", name, time.perf_counter() - t0)
 
 
-@traceable(run_type="chain", name="agentic_answer", process_input=_trim_chunks)
-def agentic_answer(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None):
-    """Agentic RAG: [guard] -> rewrite -> native tool-calling loop -> faithfulness self-correction -> [disclaimer].
-    Returns (answer, gathered, rewritten_query)."""
-    # before_model guard (jump_to=end on sensitive words)
+def _agentic_answer_impl(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None):
     blocked, refusal = guard_input(question)
     if blocked:
         if on_progress:
             on_progress({"type": "blocked", "word": refusal})
         return refusal, [], question
-    rq = rewrite_query(question)
-    if on_progress:
-        on_progress({"type": "rewrite", "rewritten": rq})
+    if should_rewrite(question, chunks):
+        if on_progress:
+            on_progress({"type": "rewrite"})
+        rq = rewrite_query(question, chunks)
+        if on_progress:
+            on_progress({"type": "rewrite_done", "rewritten": rq})
+    else:
+        rq = question
     _sys = "You are a Q&A agent with tools. RULES: (1) If the user asks about current events, news, real-time info, recent facts, OR explicitly asks to search the web/website/internet → call search_web FIRST (do NOT answer from the documents). (2) For questions about the uploaded documents → call search_docs. (3) If search_docs returns irrelevant or insufficient info → call search_web. (4) For math → call calculator. (5) For encyclopedic facts → call wikipedia_search. (6) Cite sources. After gathering info, answer concisely. Use remembered user facts to personalize answers when relevant."
     if memory:
         _sys += "\n\n## Remembered about this user (from past conversations)\n" + "\n".join(f"- {m}" for m in memory if m)
+    _sys += _lang_line()
     messages = [
         {"role": "system", "content": _sys},
-        {"role": "user", "content": f"Question: {question}\n(Rewritten for retrieval: {rq})"},
+        _user_message(question, rq),
     ]
     gathered = []
     answer = None
@@ -295,25 +434,34 @@ def agentic_answer(question, chunks, k=5, on_progress=None, max_steps=8, max_sel
     return answer, gathered, rq
 
 
-def agentic_answer_stream(question, chunks, k=5, on_progress=None, max_steps=8, memory=None):
-    """Streaming agentic RAG: [guard] -> rewrite -> native tool-calling loop (streaming the
-    final answer token-by-token via llm_chat_stream) -> [disclaimer]. Yields answer tokens.
-    NOTE: faithfulness self-correction is skipped in stream mode (the loop's answer is final)."""
+@traceable(run_type="chain", name="agentic_answer", process_input=_trim_chunks)
+def agentic_answer(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None):
+    """Agentic RAG: [guard] -> [rewrite] -> native tool-calling loop -> faithfulness self-correction -> [disclaimer].
+    Returns (answer, gathered, rewritten_query)."""
+    with _retry_events(on_progress):
+        return _agentic_answer_impl(question, chunks, k, on_progress, max_steps, max_self_correct, memory)
+
+
+def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_steps=8, memory=None):
     blocked, refusal = guard_input(question)
     if blocked:
         if on_progress:
             on_progress({"type": "blocked", "word": refusal})
         yield refusal
         return
-    if on_progress:
-        on_progress({"type": "rewrite"})
-    rq = rewrite_query(question)
+    if should_rewrite(question, chunks):
+        if on_progress:
+            on_progress({"type": "rewrite"})
+        rq = rewrite_query(question, chunks)
+    else:
+        rq = question
     _sys = "You are a Q&A agent with tools. RULES: (1) If the user asks about current events, news, real-time info, recent facts, OR explicitly asks to search the web/website/internet \u2192 call search_web FIRST (do NOT answer from the documents). (2) For questions about the uploaded documents \u2192 call search_docs. (3) If search_docs returns irrelevant or insufficient info \u2192 call search_web. (4) For math \u2192 call calculator. (5) For encyclopedic facts \u2192 call wikipedia_search. (6) Cite sources. After gathering info, answer concisely. Use remembered user facts to personalize answers when relevant."
     if memory:
         _sys += "\n\n## Remembered about this user (from past conversations)\n" + "\n".join(f"- {m}" for m in memory if m)
+    _sys += _lang_line()
     messages = [
         {"role": "system", "content": _sys},
-        {"role": "user", "content": f"Question: {question}\n(Rewritten for retrieval: {rq})"},
+        _user_message(question, rq),
     ]
     gathered = []
     answer_parts = []
@@ -355,3 +503,11 @@ def agentic_answer_stream(question, chunks, k=5, on_progress=None, max_steps=8, 
         src = f"\n\n[Source: Wikipedia]({_wiki_url})"
         for ch in src:
             yield ch
+
+
+def agentic_answer_stream(question, chunks, k=5, on_progress=None, max_steps=8, memory=None):
+    """Streaming agentic RAG: [guard] -> [rewrite] -> native tool-calling loop (streaming the
+    final answer token-by-token via llm_chat_stream) -> [disclaimer]. Yields answer tokens.
+    NOTE: faithfulness self-correction is skipped in stream mode (the loop's answer is final)."""
+    with _retry_events(on_progress):
+        yield from _agentic_answer_stream_impl(question, chunks, k, on_progress, max_steps, memory)

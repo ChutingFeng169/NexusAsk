@@ -32,10 +32,9 @@ def load_pptx(path):
     return docs
 
 def search_chunks(query, chunks, k=4):
-    qw = set(query.lower().split()); scored = []
-    for i, c in enumerate(chunks): scored.append((len(qw & set(c.lower().split())), i, c))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, _, c in scored[:k]]
+    """Document retrieval (BM25 + keyword hybrid, fused with RRF)."""
+    import retrieval
+    return retrieval.hybrid_search(query, chunks, k)
 
 def call_llm(prompt):
     client = httpx.Client(base_url=OPENAI_BASE_URL, headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, timeout=httpx.Timeout(120.0, connect=30.0))

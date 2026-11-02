@@ -9,7 +9,7 @@ real.
 
 Verified:
   1. retry count is exactly as expected (fail N-1 then succeed on N)
-  2. exponential backoff durations grow ~2x per step (not fixed)
+  2. exponential backoff with jitter (ceilings ~2x per step; each wait within its band)
   3. after MAX_RETRIES (10) all-rate-limited attempts -> fallback is used
 """
 
@@ -95,7 +95,7 @@ def test_fallback_triggers_after_max_retries():
 
 # ---------------------------------------------------------------- test 3
 def test_exponential_backoff_timing():
-    """Captured backoff durations must grow ~2x per step (exponential, not fixed)."""
+    """Exponential backoff with jitter: ceilings grow ~2x; each wait within its ceiling band."""
     attempts = {"n": 0}
 
     def fake_primary(prompt):
@@ -113,15 +113,17 @@ def test_exponential_backoff_timing():
         answer_with_retry_and_fallback("测试问题")
 
     print(f"   每次重试退避时间(秒): {sleeps}")
-    assert len(sleeps) >= 2, f"need >=2 sleeps to compare growth, got {sleeps}"
-    # strictly increasing
-    for i in range(1, len(sleeps)):
-        assert sleeps[i] > sleeps[i - 1], f"waits must strictly increase, got {sleeps}"
-    # ~2x growth per step (allow 1.8 - 2.2 tolerance)
-    for i in range(1, len(sleeps)):
-        ratio = sleeps[i] / sleeps[i - 1]
-        assert 1.8 <= ratio <= 2.2, f"expected ~2x growth, got ratio {ratio:.2f} for {sleeps}"
-    print("✅ 测试3通过：退避时间指数增长(~2x/步)，不是固定间隔")
+    assert len(sleeps) == 3, f"expected 3 backoff sleeps (between 4 attempts), got {len(sleeps)}"
+    # ceilings: BACKOFF_BASE * 2^(n-1) = 1, 2, 4 (capped at BACKOFF_MAX)
+    # each wait = max(BACKOFF_MIN, uniform(ceiling/2, ceiling)) -> jitter within band
+    ceilings = [min(rlf.BACKOFF_MAX, rlf.BACKOFF_BASE * (2 ** i)) for i in range(len(sleeps))]
+    for i, s in enumerate(sleeps):
+        lo = max(rlf.BACKOFF_MIN, ceilings[i] / 2)
+        hi = max(rlf.BACKOFF_MIN, ceilings[i])
+        assert lo <= s <= hi, f"sleep {i} = {s:.2f} outside band [{lo:.2f}, {hi:.2f}] (ceiling={ceilings[i]})"
+    # overall growth: ceilings double each step, so last sleep > first
+    assert sleeps[-1] > sleeps[0], f"expected overall growth, got {sleeps}"
+    print(f"✅ 测试3通过：退避时间指数增长(with jitter), sleeps={[round(s,2) for s in sleeps]}, ceilings={ceilings}")
 
 
 def test_on_progress_event_sequence():

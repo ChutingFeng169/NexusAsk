@@ -71,7 +71,7 @@ The Streamlit header + bottom container are made transparent via CSS so the purp
 | `agentic_rag.py` | Agent loop + 4 tools + streaming (`llm_chat`, `llm_chat_stream`, `agentic_answer`, `agentic_answer_stream`), guard, disclaimer |
 | `memory.py` | Long-term memory: `extract_memory` / `load_memory` / `format_memory_prompt` / `clear_memory` |
 | `streaming_tokens_retry.py` | httpx SSE streaming (`stream_chat`), token counting (`count_tokens`), content retry |
-| `rate_limit_fallback.py` | 429 backoff-retry + fallback model (non-agentic path) |
+| `rate_limit_fallback.py` | tenacity retry (429/5xx/timeout/network) + jitter backoff + fallback model (non-agentic path) |
 | `timeout_handling.py` | timeout for model calls (non-agentic path) |
 | `async_pipelines.py` | async/concurrent multi-file helpers |
 | `simple_eval.py` | faithfulness (embedding similarity) |
@@ -132,7 +132,7 @@ guard_input -> rewrite_query -> [tool-calling loop] -> answer -> disclaimer -> [
 - **`llm_chat_stream(messages, tools, _out)`** — httpx `stream=True` + SSE; yields `delta.content`; accumulates `delta.tool_calls` into `_out`.
 - **`agentic_answer_stream(...)`** — generator; drives the loop; yields the final answer token-by-token; appends disclaimer/wiki.
 - **`agentic_answer_cached(...)`** — generator; cache hit -> chunked stream; cache miss -> real stream.
-- The UI consumes it with `st.write_stream(...)`, accumulating tokens into the saved assistant message + the `~N tokens` caption. A one-line `st.empty()` status shows "🤖 Thinking…" immediately + step labels (rewrite/tool/stream) live, then is cleared.
+- The UI streams the answer into an `st.empty()` placeholder (clears stale content on rerun immediately) via `st.write_stream`, accumulating tokens into the saved assistant message + the `~N tokens` caption. A live `st.status(expanded=True)` driven by `StepTracker` shows friendly step labels ("Checking safety", "Rewriting query", "Thinking (step N)", "Calling {tool}") + durations, with "retrying (n/m)…" while `call_with_retry` backs off (state stays `running`) and `state="error"` + a friendly message if all retries fail. Saved steps re-render under a "Show steps" expander in chat history.
 
 ## Long-term memory
 

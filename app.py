@@ -1,4 +1,6 @@
 import os
+import re
+import json
 from dotenv import load_dotenv
 # Load .env FIRST, before any langchain/langsmith imports, so tracing env vars exist at import time
 load_dotenv()
@@ -32,6 +34,11 @@ import async_pipelines as ap
 import streaming_tokens_retry as str_mod
 import agentic_rag
 import memory
+import retrieval
+import retry_helper
+import sidebar_ui
+import step_ui
+from types import SimpleNamespace
 from langsmith import Client as LangSmithClient
 
 DEFAULT_CHUNK_SIZE = 500
@@ -110,7 +117,7 @@ def show_langsmith_trace():
         runs = list(client.list_runs(project_name=os.getenv("LANGSMITH_PROJECT", "nexusask"), is_root=True, limit=1))
         if runs:
             run = runs[0]
-            with st.expander("🔍 LangSmith Trace"):
+            with st.expander("LangSmith Trace"):
                 url = run.url if hasattr(run, "url") else f"https://smith.langchain.com/runs/{run.id}"
                 st.markdown(f"**Trace URL:** [{url}]({url})")
                 st.markdown(f"**Run ID:** `{run.id}`")
@@ -127,8 +134,10 @@ def show_langsmith_trace():
     except Exception as e:
         st.caption(f"Trace fetch failed: {e}")
 
-st.set_page_config(page_title="NexusAsk", page_icon="🌐", layout="wide")
-st.markdown("""
+st.set_page_config(page_title="NexusAsk", page_icon=None, layout="wide")
+from pathlib import Path
+st.markdown(f"<style>{(Path(__file__).parent / 'style.css').read_text()}</style>", unsafe_allow_html=True)
+_UNUSED_CSS = """
 <style>
     .stApp { background: linear-gradient(135deg, #fce4ec 0%, #f3e5f5 30%, #e1bee7 60%, #ce93d8 100%); }
     .main { background: transparent; }
@@ -191,7 +200,7 @@ st.markdown("""
     section[data-testid="stSidebar"] [data-testid="stPopover"] > button,
     section[data-testid="stSidebar"] [data-testid="stPopoverButton"] { background: transparent !important; background-color: transparent !important; border: none !important; box-shadow: none !important; outline: none !important; }
 </style>
-""", unsafe_allow_html=True)
+"""
 
 def load_users():
     if os.path.exists(USERS_FILE):
@@ -204,8 +213,8 @@ def save_users(users):
 def is_valid_email(email): return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email) is not None
 
 def show_auth_screen():
-    st.title("🌐 NexusAsk"); st.markdown("---")
-    tab1, tab2 = st.tabs(["🔑 Login", "📝 Register"])
+    st.title("NexusAsk"); st.markdown("---")
+    tab1, tab2 = st.tabs(["Login", "Register"])
     with tab1:
         st.subheader("Login")
         le = st.text_input("Email", key="login_email")
@@ -394,67 +403,67 @@ def _on_initial_submit():
 
 def upload_popover():
     """＋ popover with a drag & drop file uploader; returns the uploaded files (or None)."""
-    with st.popover("＋", use_container_width=False, help="Upload files (drag & drop)"):
+    with st.popover("+", use_container_width=False, help="Upload files (drag & drop)"):
         st.caption("Drag & drop or click to upload (pdf, docx, pptx, xlsx, txt, md, csv)")
         return st.file_uploader("Files", type=["pdf", "docx", "pptx", "xlsx", "xls", "txt", "md", "csv"], label_visibility="collapsed", accept_multiple_files=True, key="uploader")
 
 
-@st.dialog("🗑️ Confirm clear all history")
+@st.dialog("Confirm clear all history")
 def confirm_clear_all(email):
     st.write("This will **permanently delete ALL your saved conversations**. This cannot be undone.")
     c1, c2 = st.columns(2)
-    if c1.button("✅ Delete all", type="primary"):
+    if c1.button("Delete all", type="primary"):
         save_user_convs(email, []); st.rerun()
-    if c2.button("❌ Cancel"):
+    if c2.button("Cancel"):
         st.rerun()
 
 
-@st.dialog("🗑️ Confirm delete file")
+@st.dialog("Confirm delete file")
 def confirm_delete_library_file(email, fname):
     st.write(f"Are you sure you want to delete **{fname}**?")
     c1, c2 = st.columns(2)
-    if c1.button("✅ Delete", type="primary"):
+    if c1.button("Delete", type="primary"):
         delete_library_file(email, fname)
         if fname in st.session_state.get("file_raw_bytes", {}): del st.session_state.file_raw_bytes[fname]
         if st.session_state.get("preview_file") == fname: del st.session_state.preview_file
         if fname in st.session_state.get("uploaded_filenames", []): st.session_state.uploaded_filenames.remove(fname)
         if fname in st.session_state.get("processed_files", {}): del st.session_state.processed_files[fname]
         st.rerun()
-    if c2.button("❌ Cancel"):
+    if c2.button("Cancel"):
         st.rerun()
 
 
-@st.dialog("🚪 Confirm logout")
+@st.dialog("Confirm logout")
 def confirm_logout(email):
     st.write("Your current conversation will be **checkpointed** and your **long-term memory updated**. Log out now?")
     c1, c2 = st.columns(2)
-    if c1.button("✅ Logout", type="primary"):
+    if c1.button("Logout", type="primary"):
         archive_current()
         for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
-    if c2.button("❌ Cancel"):
+    if c2.button("Cancel"):
         st.rerun()
 
 
-@st.dialog("🗑️ Confirm delete conversation")
+@st.dialog("Confirm delete conversation")
 def confirm_delete_conv(email, idx):
     st.write("Delete this conversation?")
     c1, c2 = st.columns(2)
-    if c1.button("✅ Delete", type="primary"):
+    if c1.button("Delete", type="primary"):
         convs = load_user_convs(email)
         if idx < len(convs): convs.pop(idx); save_user_convs(email, convs)
         st.rerun()
-    if c2.button("❌ Cancel"):
+    if c2.button("Cancel"):
         st.rerun()
 
 
-@st.dialog("🗑️ Confirm clear memory")
+@st.dialog("Confirm clear memory")
 def confirm_clear_memory(email):
     st.write("Clear all long-term memories the agent has learned about you?")
     c1, c2 = st.columns(2)
-    if c1.button("✅ Clear memory", type="primary"):
+    if c1.button("Clear memory", type="primary"):
         memory.clear_memory(email); st.rerun()
-    if c2.button("❌ Cancel"):
+    if c2.button("Cancel"):
         st.rerun()
 
 
@@ -511,10 +520,8 @@ def load_file(uf):
             except: pass
 
 def search_chunks(query, chunks, k=4):
-    qw = set(query.lower().split()); scored = []
-    for i, c in enumerate(chunks): scored.append((len(qw & set(c.lower().split())), i, c))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, _, c in scored[:k]]
+    """Document retrieval (BM25 + keyword hybrid, fused with RRF)."""
+    return retrieval.hybrid_search(query, chunks, k)
 
 # ---------- Semantic cache (threshold 0.92) + traced Retrieval/LLM pipeline ----------
 _embedder = None
@@ -526,7 +533,7 @@ def get_embedder():
     return _embedder
 
 def build_prompt(q, ctx):
-    instr = "Think step by step and provide a thorough, detailed answer." if st.session_state.get("answer_mode") == "🧠 Thinking" else "Answer concisely and directly."
+    instr = "Think step by step and provide a thorough, detailed answer." if st.session_state.get("answer_mode") == "Thinking" else "Answer concisely and directly."
     return f"You are a helpful assistant. {instr}\n\nDocument content:\n{ctx}\n\nQuestion: {q}\n\nAnswer:"
 
 def _cosine(a, b):
@@ -559,17 +566,19 @@ def _make_streamlit_reporter(status):
         t = ev.get("type")
         try:
             if t == "attempt":
-                status.update(label=f"🤖 Calling model (attempt {ev['n']}/{ev['total']})")
+                status.update(label=f"Calling model (attempt {ev['n']}/{ev['total']})")
             elif t == "rate_limited":
-                st.write(f"⚠️ Attempt {ev['n']}: rate-limited (429). Retrying in {ev['wait']:.1f}s…")
+                st.write(f"Attempt {ev['n']}: rate-limited (429). Retrying in {ev['wait']:.1f}s…")
+            elif t == "retrying":
+                st.write(f"Attempt {ev['n']}: {ev.get('reason', 'error')}. Retrying in {ev['wait']:.1f}s…")
             elif t == "exhausted":
-                status.update(label="🔄 Fallback model thinking…", state="running")
+                status.update(label="Fallback model thinking…", state="running")
             elif t == "fallback":
                 st.write("Contacting fallback model…")
             elif t == "fallback_done":
-                status.update(label="✅ Fallback model responded", state="complete")
+                status.update(label="Fallback model responded", state="complete")
             elif t == "done":
-                status.update(label="✅ Answer ready", state="complete")
+                status.update(label="Answer ready", state="complete")
         except Exception:
             pass
     return report
@@ -585,7 +594,7 @@ def _make_timeout_reporter(status):
             elif t == "waiting":
                 status.update(label=f"⏳ Waiting for model… {ev['elapsed']:.1f}s / {ev['timeout']:.0f}s")
             elif t == "done":
-                status.update(label=f"✅ Responded in {ev['elapsed']:.1f}s", state="complete")
+                status.update(label=f"Responded in {ev['elapsed']:.1f}s", state="complete")
             elif t == "timeout":
                 status.update(label=f"⏱ Timed out after {ev['timeout']:.0f}s", state="error")
         except Exception:
@@ -638,15 +647,19 @@ def _make_agentic_reporter(status):
         t = ev.get("type")
         try:
             if t == "blocked":
-                status.update(label="🛑 Blocked (sensitive word)", state="error")
+                status.update(label="Blocked (sensitive word)", state="error")
             elif t == "rewrite":
-                status.update(label="🔄 Rewriting query…")
+                status.update(label="Rewriting query…")
             elif t == "thinking":
-                status.update(label=f"🤖 Thinking (step {ev['step']})…")
+                status.update(label=f"Thinking (step {ev['step']})…")
             elif t == "tool_call":
-                status.update(label=f"🔧 Calling {ev['name']}…")
+                status.update(label=f"Calling {ev['name']}…")
             elif t == "tool_result":
-                status.update(label=f"✅ {ev['name']} → {ev['n']} result(s)")
+                status.update(label=f"{ev['name']} → {ev['n']} result(s)")
+            elif t == "rewrite_done":
+                status.update(label=f"Rewritten: {str(ev.get('rewritten', ''))[:30]}…")
+            elif t == "retry":
+                status.update(label=f"Retrying ({ev['n']}/{ev.get('total','?')}) — {ev.get('reason','')}…")
         except Exception: pass
     return report
 
@@ -656,7 +669,7 @@ def agentic_answer_cached(q, chunks, k, status=None, email=None):
     blocked, refusal = agentic_rag.guard_input(q)
     if blocked:
         if status:
-            try: status.update(label="🛑 Blocked (sensitive word)", state="error")
+            try: status.update(label="Blocked (sensitive word)", state="error")
             except Exception: pass
         yield refusal
         return
@@ -672,7 +685,7 @@ def agentic_answer_cached(q, chunks, k, status=None, email=None):
             st.session_state["_last_stream_sim"] = best_sim
             st.session_state["_last_stream_cached"] = True
             if status:
-                try: status.update(label=f"⚡ Cached · sim {best_sim:.2f}", state="complete")
+                try: status.update(label=f"Cached · sim {best_sim:.2f}", state="complete")
                 except Exception: pass
             _cached_ans = cache[best_idx]["answer"]
             for i in range(0, len(_cached_ans), 3):
@@ -680,12 +693,13 @@ def agentic_answer_cached(q, chunks, k, status=None, email=None):
                 time.sleep(0.01)
             return
     _mem = memory.load_memory(email) if email else None
+    _rep = _make_agentic_reporter(status)
     _acc = []
-    for tok in agentic_rag.agentic_answer_stream(q, chunks, k, on_progress=_make_agentic_reporter(status), memory=_mem):
+    for tok in agentic_rag.agentic_answer_stream(q, chunks, k, on_progress=_rep, memory=_mem):
         _acc.append(tok)
         yield tok
     if status:
-        try: status.update(label="✅ Answer ready", state="complete")
+        try: status.update(label="Answer ready", state="complete")
         except Exception: pass
     answer = "".join(_acc)
     if q_emb is None: q_emb = get_embedder().embed_query(q)
@@ -732,7 +746,7 @@ def stream_answer_question(q, chunks, k, status=None):
             st.session_state["_last_stream_sim"] = best_sim
             st.session_state["_last_stream_cached"] = True
             if status:
-                try: status.update(label=f"⚡ Cached answer · sim {best_sim:.2f}", state="complete")
+                try: status.update(label=f"Cached answer · sim {best_sim:.2f}", state="complete")
                 except Exception: pass
             yield cache[best_idx]["answer"]
             return
@@ -742,7 +756,7 @@ def stream_answer_question(q, chunks, k, status=None):
     ctx_chunks = str_mod.truncate_context_to_fit(retrieved, MAX_CONTEXT_TOKENS)
     pr = build_prompt(q, "\n\n".join(ctx_chunks))
     if status:
-        try: status.update(label=f"🤖 Thinking…")
+        try: status.update(label=f"Thinking…")
         except Exception: pass
     full = []
     for delta in stream_answer(pr, status):
@@ -756,16 +770,16 @@ def stream_answer_question(q, chunks, k, status=None):
     if len(cache) > 200: del cache[:len(cache) - 200]
     st.session_state["cache_misses"] = st.session_state.get("cache_misses", 0) + 1
     if status:
-        try: status.update(label="✅ Answer ready", state="complete")
+        try: status.update(label="Answer ready", state="complete")
         except Exception: pass
 
 def preview_pdf(raw, fname):
     b64 = base64.b64encode(raw).decode()
-    st.markdown(f"### 📄 {fname}")
+    st.markdown(f"### {fname}")
     st.markdown(f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="800" type="application/pdf"></iframe>', unsafe_allow_html=True)
 
 def preview_docx(raw, fname):
-    st.markdown(f"### 📄 {fname}"); path = None
+    st.markdown(f"### {fname}"); path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as f: f.write(raw); path = f.name
         from docx import Document as D
@@ -785,7 +799,7 @@ def preview_docx(raw, fname):
         if path and os.path.exists(path): os.unlink(path)
 
 def preview_pptx(raw, fname):
-    st.markdown(f"### 📄 {fname}"); path = None
+    st.markdown(f"### {fname}"); path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as f: f.write(raw); path = f.name
         from pptx import Presentation
@@ -803,7 +817,7 @@ def preview_pptx(raw, fname):
         if path and os.path.exists(path): os.unlink(path)
 
 def preview_xlsx(raw, fname):
-    st.markdown(f"### 📄 {fname}"); path = None
+    st.markdown(f"### {fname}"); path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f: f.write(raw); path = f.name
         from openpyxl import load_workbook
@@ -816,7 +830,7 @@ def preview_xlsx(raw, fname):
         if path and os.path.exists(path): os.unlink(path)
 
 def preview_text(raw, fname):
-    st.markdown(f"### 📄 {fname}")
+    st.markdown(f"### {fname}")
     suffix = "." + fname.split(".")[-1].lower()
     try: content = raw.decode("utf-8")
     except: content = raw.decode("latin-1")
@@ -842,79 +856,29 @@ chunk_overlap = DEFAULT_CHUNK_OVERLAP
 k = DEFAULT_K
 
 # ======================== Sidebar ========================
-with st.sidebar:
-    st.markdown(f"## 🌐 NexusAsk")
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-    if st.button("📁 Library"):
-        st.session_state.library_view = True
-        if "review_conversation" in st.session_state: del st.session_state.review_conversation
-        if "preview_file" in st.session_state: del st.session_state.preview_file
-        st.rerun()
-    if st.button("➕ New Conversation"):
-        with st.spinner("Saving conversation…"):
-            archive_current()
-        for key in ["messages", "doc_chunks", "uploaded_filenames", "processed_files", "file_raw_bytes", "applied_chunk_size", "applied_chunk_overlap", "preview_file", "review_conversation", "show_uploader", "library_view", "preview_from_library"]:
-            if key in st.session_state: del st.session_state[key]
-        if "continuing_conversation_idx" in st.session_state: del st.session_state["continuing_conversation_idx"]
-        st.rerun()
-    convs = load_user_convs(user_email)
-    # lazy title upgrade: generate the real title in the background for any conversation still using a temp title
-    for _c in convs:
-        _cid = _c.get("id")
-        if _c.get("title_is_final") is False and _cid and _cid not in _title_in_progress:
-            _title_in_progress.add(_cid)
-            threading.Thread(target=upgrade_title_async, args=(user_email, _cid), daemon=True).start()
-    if convs:
-        for idx in range(len(convs) - 1, -1, -1):
-            _name = convs[idx].get("title") or convs[idx].get("filename", "?")
-            _disp = _name if len(_name) <= 24 else _name[:23] + "…"
-            with st.container(border=False, key=f"convframe_{idx}"):
-                _t1, _t2 = st.columns([8, 1])
-                with _t1:
-                    if st.button(f"{_disp}", key=f"conv_{idx}"):
-                        st.session_state.review_conversation = idx
-                        if "preview_file" in st.session_state: del st.session_state.preview_file
-                        st.rerun()
-                with _t2:
-                    with st.popover("⋮", use_container_width=True, key=f"menu_{idx}"):
-                        if st.button("🗑️ Delete", key=f"del_{idx}"):
-                            confirm_delete_conv(user_email, idx)
-                        if st.button("✏️ Rename", key=f"ren_{idx}"):
-                            st.session_state["renaming_conv"] = idx
-                            st.rerun()
-                if st.session_state.get("renaming_conv") == idx:
-                    _new = st.text_input("New name", value=_name, key=f"rn_{idx}")
-                    _rc1, _rc2 = st.columns(2)
-                    if _rc1.button("✅ Save", key=f"rsv_{idx}"):
-                        _convs = load_user_convs(user_email)
-                        if idx < len(_convs): _convs[idx]["title"] = _new; save_user_convs(user_email, _convs)
-                        del st.session_state["renaming_conv"]; st.rerun()
-                    if _rc2.button("❌ Cancel", key=f"rnc_{idx}"):
-                        del st.session_state["renaming_conv"]; st.rerun()
-        if st.button("🗑️ Clear All History"):
-            confirm_clear_all(user_email)
-    else: st.caption("No conversations yet")
-    st.divider()
+sidebar_ui.render_sidebar(SimpleNamespace(
+    user_email=user_email, user_name=user_name,
+    archive_current=archive_current, load_user_convs=load_user_convs,
+    save_user_convs=save_user_convs, confirm_delete_conv=confirm_delete_conv,
+    confirm_clear_all=confirm_clear_all, confirm_logout=confirm_logout,
+    upgrade_title_async=upgrade_title_async, _title_in_progress=_title_in_progress,
+    BASE_DIR=BASE_DIR,
+))
 
-
-    st.markdown(f"👤 **{user_name}**")
-    st.caption(f"📧 {user_email}")
-    if st.button("🚪 Logout"):
-        confirm_logout(user_email)
 # ======================== Main ========================
 # (greeting "Hi! {name}, what's on your mind?" now shows only on the initial get-started screen)
 
 if "library_view" in st.session_state:
-    if st.button("← Back to chat"):
+    if st.button("Back to chat", icon=":material/arrow_back:"):
         del st.session_state.library_view; st.rerun()
     st.divider()
-    st.markdown("## 📁 Library")
+    st.markdown("## Library")
     _lib_files = list_library_files(user_email)
     if _lib_files:
         for fname in _lib_files:
             _lr1, _lr2 = st.columns([9, 1])
             with _lr1:
-                if st.button(f"📄 {fname}", key=f"lib_{fname}"):
+                if st.button(f"{fname}", key=f"lib_{fname}", icon=":material/description:"):
                     _raw = read_library_file(user_email, fname)
                     if _raw is not None:
                         st.session_state.setdefault("file_raw_bytes", {})[fname] = _raw
@@ -923,7 +887,7 @@ if "library_view" in st.session_state:
                         del st.session_state.library_view
                         st.rerun()
             with _lr2:
-                if st.button("🗑️", key=f"libdelpage_{fname}", help="Delete"):
+                if st.button("", icon=":material/delete:", key=f"libdelpage_{fname}", help="Delete"):
                     confirm_delete_library_file(user_email, fname)
     else:
         st.caption("No files in your library yet. Upload a file to get started.")
@@ -932,13 +896,13 @@ elif "preview_file" in st.session_state:
     fname = st.session_state.preview_file
     raw_bytes = st.session_state.get("file_raw_bytes", {})
     if st.session_state.get("preview_from_library"):
-        if st.button("← Back to library"):
+        if st.button("Back to library", icon=":material/arrow_back:"):
             del st.session_state.preview_file
             st.session_state.library_view = True
             del st.session_state.preview_from_library
             st.rerun()
     else:
-        if st.button("← Back to chat"):
+        if st.button("Back to chat", icon=":material/arrow_back:"):
             del st.session_state.preview_file; st.rerun()
     st.divider()
     if fname in raw_bytes: render_preview(fname, raw_bytes[fname])
@@ -949,12 +913,12 @@ elif "review_conversation" in st.session_state:
     idx = st.session_state.review_conversation
     if idx < len(convs):
         c = convs[idx]
-        st.markdown(f"### 📖 {c.get('filename', '?')} — {c.get('timestamp', '')}")
+        st.markdown(f"### {c.get('filename', '?')} — {c.get('timestamp', '')}")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("← Back to current"): del st.session_state.review_conversation; st.rerun()
+            if st.button("Back to current", icon=":material/arrow_back:"): del st.session_state.review_conversation; st.rerun()
         with col2:
-            if st.button("▶️ Continue"):
+            if st.button("Continue", icon=":material/play_arrow:"):
                 st.session_state.messages = c.get("messages", []).copy()
                 st.session_state.doc_chunks = c.get("doc_chunks", []).copy()
                 st.session_state.uploaded_filenames = c.get("filename", "").split(", ")
@@ -968,54 +932,36 @@ elif "review_conversation" in st.session_state:
         st.divider(); st.markdown("### Continue asking:")
         _pending = st.session_state.pop("pending_retry_followup", None)
         if _pending:
-            with st.chat_message("assistant"):
-                with st.status("🤖 Thinking… (retry)", expanded=False) as _status:
-                    try:
-                        a = agentic_answer_cached(_pending, c.get("doc_chunks", []), DEFAULT_K, _status, email=user_email)
-                    except Exception as e:
-                        _status.update(label="❌ Retry failed", state="error"); st.error(f"Failed: {e}")
-                        a = None
-                if a:
-                    st.write_stream(a[i:i+3] for i in range(0, len(a), 3))
-                    st.caption(f"~{str_mod.count_tokens(a)} tokens · {'⚡ Cached' if st.session_state.get('_last_stream_cached') else '✨ Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
-                    st.session_state.messages.append({"role": "assistant", "content": a})
+            def _footer(text):
+                if st.session_state.get("dev_info"):
+                    st.caption(f"~{str_mod.count_tokens(text)} tokens · {'Cached' if st.session_state.get('_last_stream_cached') else 'Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
                     show_langsmith_trace()
-                    convs[idx]["messages"] = st.session_state.messages.copy()
-                    save_user_convs(user_email, convs)
+            a, _steps = step_ui.run_assistant_turn(
+                lambda status: agentic_answer_cached(_pending, c.get("doc_chunks", []), DEFAULT_K, status, email=user_email),
+                footer=_footer)
+            if a:
+                st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})
+                convs[idx]["messages"] = st.session_state.messages.copy()
+                save_user_convs(user_email, convs)
         q = st.chat_input("Ask a follow-up...")
         if q:
             st.session_state.messages.append({"role": "user", "content": q})
             with st.chat_message("user"): st.write(q)
-            with st.chat_message("assistant"):
-                _status_line = st.empty()
-                _status_line.caption("🤖 Thinking…")
-                class _S:
-                    def update(self, label="", state="running", **kw):
-                        try: _status_line.caption(label)
-                        except Exception: pass
-                _status = _S()
-                _acc = []
-                def _consume():
-                    try:
-                        for tok in agentic_answer_cached(q, c.get("doc_chunks", []), DEFAULT_K, _status, email=user_email):
-                            _acc.append(tok)
-                            yield tok
-                    except Exception as e:
-                        _status.update(label=f"❌ Failed: {e}", state="error")
-                        st.error(f"Failed: {e}")
-                st.write_stream(_consume())
-                _status_line.empty()
-                a = "".join(_acc)
-                if a:
-                    st.caption(f"~{str_mod.count_tokens(a)} tokens · {'⚡ Cached' if st.session_state.get('_last_stream_cached') else '✨ Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
-                    st.session_state.messages.append({"role": "assistant", "content": a})
+            def _footer(text):
+                if st.session_state.get("dev_info"):
+                    st.caption(f"~{str_mod.count_tokens(text)} tokens · {'Cached' if st.session_state.get('_last_stream_cached') else 'Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
                     show_langsmith_trace()
-                    convs[idx]["messages"] = st.session_state.messages.copy()
-                    save_user_convs(user_email, convs)
-                else:
-                    if st.button("🔄 Retry", key="retry_followup_err"):
-                        st.session_state["pending_retry_followup"] = q
-                        st.rerun()
+            a, _steps = step_ui.run_assistant_turn(
+                lambda status: agentic_answer_cached(q, c.get("doc_chunks", []), DEFAULT_K, status, email=user_email),
+                footer=_footer)
+            if a:
+                st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})
+                convs[idx]["messages"] = st.session_state.messages.copy()
+                save_user_convs(user_email, convs)
+            else:
+                if st.button("Retry", key="retry_followup_err", icon=":material/refresh:"):
+                    st.session_state["pending_retry_followup"] = q
+                    st.rerun()
     else:
         del st.session_state.review_conversation; st.rerun()
 
@@ -1040,7 +986,7 @@ else:
             st.session_state["initial_q"] = ""
             st.rerun()
         st.markdown('<div style="height:24vh"></div>', unsafe_allow_html=True)
-        st.markdown(f'<div style="text-align:center;margin-bottom:18px"><span style="font-size:1.9rem;font-weight:700;background:linear-gradient(90deg,#e91e63,#9c27b0);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Hi! {user_name}, what\'s on your mind?</span></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hello">Hi! {user_name}, what\'s on your mind?</div>', unsafe_allow_html=True)
         _gc1, _gc2, _gc3 = st.columns([2, 8, 2])
         with _gc2:
             _ic1, _ic2 = st.columns([10, 1])
@@ -1056,29 +1002,26 @@ else:
                     edited = st.text_area("Edit", value=m["content"], key=f"et_{msg_idx}", height=100, label_visibility="collapsed")
                     _es1, _es2 = st.columns(2)
                     with _es1:
-                        if st.button("✅ Save", key=f"esv_{msg_idx}"):
+                        if st.button("Save", key=f"esv_{msg_idx}", icon=":material/check:"):
                             _after = st.session_state.messages[msg_idx + 2:] if msg_idx + 2 < len(st.session_state.messages) else []
                             st.session_state.messages = st.session_state.messages[:msg_idx]
                             st.session_state.messages.append({"role": "user", "content": edited})
                             del st.session_state.editing_msg
-                            with st.status("🤖 Thinking…", expanded=False) as _status:
-                                try:
-                                    a = agentic_answer_cached(edited, st.session_state.doc_chunks, k, _status, email=user_email)
-                                except Exception as e:
-                                    _status.update(label="❌ Failed", state="error")
-                                    st.error(f"Failed: {e}")
-                                    a = None
+                            a, _steps = step_ui.run_assistant_turn(
+                                lambda status: agentic_answer_cached(edited, st.session_state.doc_chunks, k, status, email=user_email))
                             if a:
-                                st.session_state.messages.append({"role": "assistant", "content": a})
+                                st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})
                                 st.session_state.messages.extend(_after)
-                                show_langsmith_trace()
+                                if st.session_state.get("dev_info"):
+                                    show_langsmith_trace()
                             st.rerun()
                     with _es2:
-                        if st.button("❌ Cancel", key=f"ecn_{msg_idx}"):
+                        if st.button("Cancel", key=f"ecn_{msg_idx}", icon=":material/close:"):
                             del st.session_state.editing_msg
                             st.rerun()
                 else:
                     st.write(m["content"])
+                    step_ui.render_steps(m.get("steps"))
         # chat_input (bottom; only in the conversation view — the start page uses the centered text_input above)
         _chunks = st.session_state.get("doc_chunks", [])
         _ci = st.chat_input("Ask a question about the documents..." if _chunks else "Ask anything (Wikipedia + web search)…", accept_file='multiple', file_type=['pdf', 'docx', 'pptx', 'xlsx', 'xls', 'txt', 'md', 'csv'])
@@ -1089,7 +1032,7 @@ else:
     if st.session_state.pop("_loaded_just_now", False):
         _lfns = st.session_state.get("uploaded_filenames", [])
         if _lfns:
-            st.caption("📁 Loaded: " + ", ".join(_lfns) + f" · {len(st.session_state.get('doc_chunks', []))} chunks")
+            st.caption("Loaded: " + ", ".join(_lfns) + f" · {len(st.session_state.get('doc_chunks', []))} chunks")
     # ----- process uploads captured from the chat_input or the ＋ popover -----
     if uploaded_files:
         with st.spinner("Reading files..."):
@@ -1097,35 +1040,20 @@ else:
         if _new:
             st.session_state["_loaded_just_now"] = True
         if _new and not q:
-            st.success(f"✅ File uploaded! {len(st.session_state.uploaded_filenames)} file(s) loaded.")
+            st.success(f"File uploaded! {len(st.session_state.uploaded_filenames)} file(s) loaded.")
             st.rerun()
     # ----- generate answer if a question was submitted (real streaming) -----
     if q:
-        if not _pending_flip:
+        if not _pending_flip or not st.session_state.get("messages"):
             st.session_state.messages.append({"role": "user", "content": q})
             st.session_state["pending_q"] = q
             st.rerun()
-        with st.chat_message("assistant"):
-            _status_line = st.empty()
-            _status_line.caption("🤖 Thinking…")
-            class _S:
-                def update(self, label="", state="running", **kw):
-                    try: _status_line.caption(label)
-                    except Exception: pass
-            _status = _S()
-            _acc = []
-            def _consume():
-                try:
-                    for tok in agentic_answer_cached(q, st.session_state.get("doc_chunks", []), k, _status, email=user_email):
-                        _acc.append(tok)
-                        yield tok
-                except Exception as e:
-                    _status.update(label=f"❌ Failed: {e}", state="error")
-                    st.error(f"Failed: {e}")
-            st.write_stream(_consume())
-            _status_line.empty()
-            a = "".join(_acc)
-            if a:
-                st.caption(f"~{str_mod.count_tokens(a)} tokens · {'⚡ Cached' if st.session_state.get('_last_stream_cached') else '✨ Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
-                st.session_state.messages.append({"role": "assistant", "content": a})
+        def _footer(text):
+            if st.session_state.get("dev_info"):
+                st.caption(f"~{str_mod.count_tokens(text)} tokens · {'Cached' if st.session_state.get('_last_stream_cached') else 'Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
                 show_langsmith_trace()
+        a, _steps = step_ui.run_assistant_turn(
+            lambda status: agentic_answer_cached(q, st.session_state.get("doc_chunks", []), k, status, email=user_email),
+            footer=_footer)
+        if a:
+            st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})

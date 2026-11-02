@@ -1,0 +1,10 @@
+[theme]
+base = "light"
+primaryColor = "#c15f3c"             # the single accent colour (buttons, focus, links)
+backgroundColor = "#faf9f5"          # warm off-white page background
+secondaryBackgroundColor = "#f0eee6" # sidebar and soft panels
+textColor = "#1f1e1d"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"              # hides the Deploy / menu clutter, keeps Stop while running
