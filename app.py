@@ -38,6 +38,7 @@ import retrieval
 import retry_helper
 import sidebar_ui
 import step_ui
+import answer_actions
 from types import SimpleNamespace
 from langsmith import Client as LangSmithClient
 
@@ -1021,13 +1022,18 @@ else:
                             st.rerun()
                 else:
                     st.write(m["content"])
+                    if m["role"] == "assistant":
+                        answer_actions.render(msg_idx, m, user_email, is_last=(msg_idx == len(st.session_state.messages) - 1))
                     step_ui.render_steps(m.get("steps"))
         # chat_input (bottom; only in the conversation view — the start page uses the centered text_input above)
         _chunks = st.session_state.get("doc_chunks", [])
-        _ci = st.chat_input("Ask a question about the documents..." if _chunks else "Ask anything (Wikipedia + web search)…", accept_file='multiple', file_type=['pdf', 'docx', 'pptx', 'xlsx', 'xls', 'txt', 'md', 'csv'])
+        _ci = st.chat_input("Write message...", accept_file='multiple', file_type=['pdf', 'docx', 'pptx', 'xlsx', 'xls', 'txt', 'md', 'csv'])
         if _ci:
             q = _ci.text if hasattr(_ci, 'text') else _ci
             uploaded_files = list(getattr(_ci, 'files', None) or [])
+        # surface an unanswered question (failed answer / page refresh) when nothing is being generated
+        if not q and "review_conversation" not in st.session_state:
+            step_ui.render_unanswered()
     # loaded annotation (one-shot: shows once right after an upload)
     if st.session_state.pop("_loaded_just_now", False):
         _lfns = st.session_state.get("uploaded_filenames", [])
@@ -1049,6 +1055,7 @@ else:
             st.session_state["pending_q"] = q
             st.rerun()
         def _footer(text):
+            answer_actions.render(len(st.session_state.messages), {"role": "assistant", "content": text}, user_email, is_last=True)
             if st.session_state.get("dev_info"):
                 st.caption(f"~{str_mod.count_tokens(text)} tokens · {'Cached' if st.session_state.get('_last_stream_cached') else 'Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
                 show_langsmith_trace()

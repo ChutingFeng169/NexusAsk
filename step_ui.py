@@ -29,6 +29,43 @@ logger = logging.getLogger("nexus.ui")
 FRIENDLY_ERROR = "Nexus couldn't reach the model. Please try again."
 
 
+def _retry_failed(question):
+    """Ask the same question again (app.py answers whatever is in pending_q on the next run)."""
+    st.session_state["pending_q"] = question
+
+
+def _auto_question(retry_question):
+    """"auto" = the user's last message, but only in the main chat (the review page has its own Retry)."""
+    if retry_question != "auto":
+        return retry_question or None
+    if "review_conversation" in st.session_state:
+        return None
+    msgs = st.session_state.get("messages", [])
+    if msgs and msgs[-1].get("role") == "user":
+        return str(msgs[-1].get("content", ""))
+    return None
+
+
+def _failure_row(question, key):
+    """The error message with a red retry icon right next to it."""
+    with st.container(key=f"fail_{key}"):
+        c1, c2 = st.columns([24, 1], vertical_alignment="center")
+        c1.markdown(f'<div class="fail-msg">{FRIENDLY_ERROR}</div>', unsafe_allow_html=True)
+        if question:
+            c2.button("Retry", icon=":material/refresh:", key=f"failrt_{key}", help="Retry",
+                      on_click=_retry_failed, args=(question,))
+
+
+def render_unanswered():
+    """Call this after the history loop when no answer is being generated: if the last message is
+    a question without an answer (the answer failed, or the page was refreshed), show the same
+    error + retry icon so the user is never stuck."""
+    msgs = st.session_state.get("messages", [])
+    if msgs and msgs[-1].get("role") == "user" and "review_conversation" not in st.session_state:
+        with st.chat_message("assistant"):
+            _failure_row(str(msgs[-1].get("content", "")), "stale")
+
+
 class StepTracker:
     """Wraps ONE st.status. Has the same .update(label, state) signature as st.status,
     so the existing agentic reporters keep working. Records (action, seconds) per step."""
@@ -78,7 +115,7 @@ class StepTracker:
                 pass
 
 
-def run_assistant_turn(make_stream, footer=None):
+def run_assistant_turn(make_stream, footer=None, retry_question="auto"):
     """
     Render ONE assistant message: a single collapsed status box, then the streamed answer.
 
@@ -87,8 +124,11 @@ def run_assistant_turn(make_stream, footer=None):
     footer(answer_text) -> optional; called inside the message after streaming
         (token count caption, LangSmith trace, ...).
 
+    retry_question: the question to ask again when the red retry icon is clicked. "auto" uses the
+        user's last message (main chat); pass None to show no retry icon.
+
     Returns (answer_text, steps). answer_text is "" if the turn failed; the user sees one
-    friendly error and the real exception goes to the log.
+    friendly error with a retry icon and the real exception goes to the log.
     """
     with st.chat_message("assistant"):
         status = st.status("Nexus is thinking…", expanded=False)
@@ -104,7 +144,8 @@ def run_assistant_turn(make_stream, footer=None):
         except Exception:
             logger.exception("assistant turn failed")
             tracker.finish(ok=False)
-            answer_box.error(FRIENDLY_ERROR)
+            with answer_box.container():
+                _failure_row(_auto_question(retry_question), "live")
             return "", tracker.steps
         if footer:
             footer(text)

@@ -84,22 +84,19 @@ def save_user_settings(email, s):
         json.dump(s, f, ensure_ascii=False, indent=2)
 
 
-def _delete_with_confirm(label, key, action, full_rerun=False):
-    """Button -> 'This cannot be undone' -> Yes/Cancel, all inside the dialog."""
-    if st.button(label, key=f"{key}_ask"):
-        st.session_state[key] = True
-    if st.session_state.get(key):
+def _clear_with_confirm(label, key, action, message):
+    """Click -> "This cannot be undone" with a red Yes -> do it, close the dialog, show `message`."""
+    st.button(label, key=key, on_click=lambda k=key: st.session_state.update(_clr_pending=k))
+    if st.session_state.get("_clr_pending") == key:
         st.caption("This cannot be undone.")
         c1, c2 = st.columns(2)
-        if c1.button("Yes, delete", key=f"{key}_yes", type="primary"):
+        if c1.button("Yes", key=f"yes_{key}"):
             action()
-            st.session_state[key] = False
-            if full_rerun:
-                st.rerun()
-            st.caption("Deleted.")
-        if c2.button("Cancel", key=f"{key}_no"):
-            st.session_state[key] = False
-            st.rerun(scope="fragment")
+            st.session_state.pop("_clr_pending", None)
+            st.session_state["_flash"] = message
+            st.rerun()
+        c2.button("Cancel", key=f"no_{key}",
+                  on_click=lambda: st.session_state.pop("_clr_pending", None))
 
 
 @st.dialog("Settings")
@@ -116,9 +113,9 @@ def settings_dialog(email, name):
         st.session_state["dev_info"] = dev
     st.markdown("**Your data**")
     st.caption("NexusAsk remembers facts from past chats to personalize answers.")
-    _delete_with_confirm("Clear long-term memory", "_cf_mem", lambda: memory.clear_memory(email))
-    _delete_with_confirm("Clear chat history", "_cf_chats", lambda: _save_convs(email, []), full_rerun=True)
-    _delete_with_confirm("Clear search history", "_cf_search", lambda: clear_searches(email))
+    _clear_with_confirm("Clear long-term memory", "clr_mem", lambda: memory.clear_memory(email), "Long-term memory cleared")
+    _clear_with_confirm("Clear chat history", "clr_chats", lambda: _save_convs(email, []), "Chat history cleared")
+    _clear_with_confirm("Clear search history", "clr_search", lambda: clear_searches(email), "Search history cleared")
 
 
 @st.dialog("Language")
@@ -263,6 +260,10 @@ def render_sidebar(deps):
     upgrade_title_async = deps.upgrade_title_async
     _title_in_progress = deps._title_in_progress
 
+    _flash = st.session_state.pop("_flash", None)
+    if _flash:
+        st.toast(_flash)
+
     _settings = load_user_settings(user_email)
     st.session_state["dev_info"] = _settings["dev_info"]
     agentic_rag.set_response_language(_settings["language"])
@@ -336,6 +337,7 @@ def render_sidebar(deps):
             with st.popover(user_name, use_container_width=True):
                 st.caption(user_email)
                 if st.button("Settings", icon=":material/settings:", key="acct_settings", use_container_width=True):
+                    st.session_state.pop("_clr_pending", None)
                     settings_dialog(user_email, user_name)
                 if st.button("Language", icon=":material/language:", key="acct_language", use_container_width=True):
                     language_dialog(user_email)
