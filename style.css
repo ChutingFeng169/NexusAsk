@@ -63,7 +63,6 @@ section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has([data-tes
 section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has([data-testid="stPopover"]) [data-testid="stPopover"] { opacity: 0; transition: opacity .15s; }
 section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has([data-testid="stPopover"]):hover [data-testid="stPopover"] { opacity: 1; }
 section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 2px !important; }
-/* ⋮ trigger: just the dots */
 section[data-testid="stSidebar"] [data-testid="stPopover"],
 section[data-testid="stSidebar"] [data-testid="stPopover"] > button,
 section[data-testid="stSidebar"] [data-testid="stPopoverButton"] { background: transparent !important; background-color: transparent !important; border: none !important; box-shadow: none !important; outline: none !important; }
@@ -74,7 +73,7 @@ section[data-testid="stSidebar"] [data-testid="stPopoverBody"] { min-width: 0 !i
 [data-testid="stPopoverBody"] .stButton > button:hover { border-color: var(--line) !important; background: rgba(0,0,0,.05) !important; }
 
 /* ---------- sidebar layout (Claude-like) ---------- */
-:root { --brand-lift: 3.2rem; }   /* NexusAsk title height: bigger number = higher up */
+:root { --brand-lift: 3.2rem; }
 
 section[data-testid="stSidebar"] .stButton > button,
 section[data-testid="stSidebar"] .stButton > button > div,
@@ -100,20 +99,20 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] [data-test
 [class*="st-key-convframe_active"] .stButton > button::before { border-color: #7d7b73; }
 
 section[data-testid="stSidebar"] .st-key-nav_search { position: absolute; top: .8rem; right: 3.6rem; width: auto !important; z-index: 5; }
-section[data-testid="stSidebar"] .st-key-nav_search .stButton > button { width: 36px !important; height: 36px; min-height: 36px; padding: 0 !important;
+section[data-testid="stSidebar"] .st-key-nav_search .stButton button { width: 36px !important; height: 36px; min-height: 36px; padding: 0 !important;
   background: transparent !important; border: none !important; box-shadow: none !important; justify-content: center !important; border-radius: 8px; }
-section[data-testid="stSidebar"] .st-key-nav_search .stButton > button > * { display: none !important; }
-section[data-testid="stSidebar"] .st-key-nav_search .stButton > button::after { content: ""; display: block; width: 22px; height: 22px;
+section[data-testid="stSidebar"] .st-key-nav_search .stButton button > * { display: none !important; }
+section[data-testid="stSidebar"] .st-key-nav_search .stButton button::after { content: ""; display: block; width: 22px; height: 22px;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231f1e1d' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cline x1='16' y1='16' x2='20.5' y2='20.5'/%3E%3C/svg%3E") center / contain no-repeat; }
-section[data-testid="stSidebar"] .st-key-nav_search .stButton > button:hover { background: rgba(0,0,0,.06) !important; }
+section[data-testid="stSidebar"] .st-key-nav_search .stButton button:hover { background: rgba(0,0,0,.06) !important; }
 
-/* ---------- account area: pinned to the very bottom, Claude-style menu ---------- */
-section[data-testid="stSidebar"] [data-testid="stSidebarContent"] { display: flex; flex-direction: column; }
-section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { flex: 1 1 auto; display: flex; flex-direction: column; padding-bottom: 0 !important; }
-section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > [data-testid="stVerticalBlock"],
-section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"] { flex: 1 1 auto; }
-.st-key-side_account { margin-top: auto; position: sticky; bottom: 0; z-index: 3; background: var(--panel); border-top: 1px solid var(--line); padding: 8px 4px 10px; }
-.st-key-side_account [data-testid="stPopover"] > button { width: 100%; justify-content: flex-start !important; padding: 6px 8px !important; min-width: 0 !important; min-height: 44px; }
+/* ---------- account bar: a slim strip fixed to the bottom of the browser window ---------- */
+section[data-testid="stSidebar"] { will-change: transform; }
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-bottom: 72px !important; }
+.st-key-side_account { position: fixed; left: 0; bottom: 0; width: 100%; max-width: 21rem; z-index: 10;
+  background: var(--panel); border-top: 1px solid var(--line); padding: 6px 10px; margin: 0; box-sizing: border-box; }
+section[data-testid="stSidebar"][aria-expanded="false"] .st-key-side_account { display: none; }
+.st-key-side_account [data-testid="stPopover"] > button { width: 100%; justify-content: flex-start !important; padding: 4px 8px !important; min-width: 0 !important; min-height: 44px; }
 .st-key-side_account [data-testid="stPopover"] > button::before { content: var(--initial, "?"); flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%;
   background: var(--sel); color: var(--text); display: inline-flex; align-items: center; justify-content: center; font-size: .85rem; font-weight: 600; margin-right: 12px; }
 .st-key-side_account [data-testid="stPopover"] > button svg { display: inline !important; margin-left: auto; opacity: .6; }
@@ -123,7 +122,7 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [d
 .st-key-side_account [data-testid="stPopoverBody"] .stButton > button:hover { background: var(--panel) !important; }
 .st-key-side_account [data-testid="stPopoverBody"] hr { margin: 6px 10px; border-color: var(--line); }
 
-/* ---------- sidebar toggle: panel icon (like Claude / Gemini) instead of the double arrow ---------- */
+/* ---------- sidebar toggle: panel icon ---------- */
 [data-testid="stSidebarCollapseButton"], [data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] { opacity: 1 !important; visibility: visible !important; }
 [data-testid="stSidebarCollapseButton"] button, [data-testid="stExpandSidebarButton"] button, [data-testid="collapsedControl"] button {
   width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: transparent; }
@@ -146,8 +145,8 @@ div[data-testid="stDialog"] .stTextInput input { height: 46px; font-size: 1rem; 
 [class*="st-key-search_"] .stButton > button:hover { background: var(--panel) !important; color: var(--text) !important; }
 [class*="st-key-search_"] .stButton > button p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
 [class*="st-key-search_"] [data-testid="stCaptionContainer"] { padding-left: 10px; text-align: left; }
-[class*="st-key-srch_x_"] .stButton > button { width: 34px; padding: 0 !important; justify-content: center !important; }
-[class*="st-key-srch_x_"] .stButton > button p { display: none; }
+[class*="st-key-srch_x_"] .stButton button { width: 34px; padding: 0 !important; justify-content: center !important; }
+[class*="st-key-srch_x_"] .stButton button p { display: none; }
 .search-label { font-size: .8rem; color: var(--muted); padding: 14px 4px 4px; }
 
 /* ---------- chat messages ---------- */
