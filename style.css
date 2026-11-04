@@ -23,11 +23,14 @@ section[data-testid="stMain"] { background: transparent !important; }
 .block-container { max-width: 780px !important; padding-top: 2.5rem !important; }
 /* chat box: a solid bar fixed to the bottom of the window, so answers never show through it */
 div[data-testid="stBottom"] { background: var(--bg) !important; }
-div[data-testid="stBottom"] > div { background: var(--bg) !important; max-width: 780px; margin: 0 auto; padding-bottom: 14px; }
+div[data-testid="stBottom"] > div { background: var(--bg) !important; max-width: 780px; margin: 0 auto; padding-bottom: 6px; }
+/* small grey disclaimer under the input, part of the fixed bar (edit the text here) */
+div[data-testid="stBottom"]::after { content: "NexusAsk can make mistakes. Please double check."; display: block; text-align: center;
+  font-size: .75rem; color: var(--muted); padding: 0 12px 10px; }
 div[data-testid="stBottom"]::before { content: ""; position: absolute; left: 0; right: 0; top: -28px; height: 28px; pointer-events: none;
   background: linear-gradient(to bottom, rgba(250,249,245,0), var(--bg)); }
 /* keep the last message clear of the bar */
-.block-container { padding-bottom: 9rem !important; }
+.block-container { padding-bottom: 10rem !important; }
 
 /* ---------- typography ---------- */
 h1, h2, h3 { color: var(--text) !important; background: none !important;
@@ -49,9 +52,10 @@ h1, h2, h3 { color: var(--text) !important; background: none !important;
 [data-testid="stFileUploader"] section { background: #fff; border: 1px dashed var(--line); border-radius: 12px; }
 
 /* ---------- status box + "Show steps" ---------- */
-[data-testid="stStatus"], [data-testid="stExpander"] { background: transparent !important;
-  border: 1px solid var(--line) !important; border-radius: 12px !important; box-shadow: none !important; }
-[data-testid="stStatus"] summary, [data-testid="stExpander"] summary { color: var(--muted); font-size: .92rem; }
+[data-testid="stStatus"], [data-testid="stExpander"],
+[data-testid="stStatus"] details, [data-testid="stExpander"] details { background: transparent !important;
+  border: none !important; border-radius: 0 !important; box-shadow: none !important; }
+[data-testid="stStatus"] summary, [data-testid="stExpander"] summary { padding-left: 0 !important; color: var(--muted); font-size: .92rem; }
 
 /* ---------- sidebar ---------- */
 section[data-testid="stSidebar"] { background: var(--panel); border-right: 1px solid var(--line); }
