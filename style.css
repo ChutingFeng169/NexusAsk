@@ -24,8 +24,8 @@ section[data-testid="stMain"] { background: transparent !important; }
 /* chat box: a solid bar fixed to the bottom of the window, so answers never show through it */
 div[data-testid="stBottom"] { background: var(--bg) !important; }
 div[data-testid="stBottom"] > div { background: var(--bg) !important; max-width: 780px; margin: 0 auto; padding-bottom: 6px; }
-/* small grey disclaimer under the input, part of the fixed bar (edit the text here) */
-div[data-testid="stBottom"]::after { content: "NexusAsk can make mistakes. Please double check."; display: block; text-align: center;
+/* small grey disclaimer under the input, part of the fixed bar (the text comes from i18n.css_vars() in app.py) */
+div[data-testid="stBottom"]::after { content: var(--disclaimer, "NexusAsk can make mistakes. Please double check."); display: block; text-align: center;
   font-size: .75rem; color: var(--muted); padding: 0 12px 10px; }
 div[data-testid="stBottom"]::before { content: ""; position: absolute; left: 0; right: 0; top: -28px; height: 28px; pointer-events: none;
   background: linear-gradient(to bottom, rgba(250,249,245,0), var(--bg)); }
@@ -191,6 +191,9 @@ div[data-testid="stDialog"] .stTextInput input { height: 46px; font-size: 1rem; 
   width: 32px; height: 32px; min-height: 32px; padding: 0 !important; border-radius: 8px; justify-content: center !important; }
 [class*="st-key-fail_"] .stButton button [data-testid="stMarkdownContainer"] { display: none !important; }
 [class*="st-key-fail_"] .stButton button:hover { background: rgba(192,57,43,.12) !important; }
+
+/* the invisible container of autoscroll.py takes no space */
+.st-key-autoscroll { height: 0; margin: 0 !important; padding: 0 !important; overflow: hidden; }
 
 /* ---------- chat messages ---------- */
 [data-testid="stChatMessageAvatarUser"], [data-testid="stChatMessageAvatarAssistant"] { display: none !important; }

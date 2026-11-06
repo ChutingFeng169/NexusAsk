@@ -24,9 +24,9 @@ import time
 
 import streamlit as st
 
-logger = logging.getLogger("nexus.ui")
+from i18n import t
 
-FRIENDLY_ERROR = "Nexus couldn't reach the model. Please try again."
+logger = logging.getLogger("nexus.ui")
 
 
 def _retry_failed(question):
@@ -50,9 +50,9 @@ def _failure_row(question, key):
     """The error message with a red retry icon right next to it."""
     with st.container(key=f"fail_{key}"):
         c1, c2 = st.columns([24, 1], vertical_alignment="center")
-        c1.markdown(f'<div class="fail-msg">{FRIENDLY_ERROR}</div>', unsafe_allow_html=True)
+        c1.markdown(f'<div class="fail-msg">{t("turn.error")}</div>', unsafe_allow_html=True)
         if question:
-            c2.button("Retry", icon=":material/refresh:", key=f"failrt_{key}", help="Retry",
+            c2.button(t("action.retry"), icon=":material/refresh:", key=f"failrt_{key}", help=t("action.retry"),
                       on_click=_retry_failed, args=(question,))
 
 
@@ -100,7 +100,7 @@ class StepTracker:
                 self._close()
                 self._final = state
                 total = time.perf_counter() - self._start
-                self.status.update(label=f"{label or 'Done'} · {total:.1f}s", state=state)
+                self.status.update(label=f"{label or t('turn.done')} · {total:.1f}s", state=state)
         except Exception:
             logger.debug("status update failed", exc_info=True)
 
@@ -110,7 +110,7 @@ class StepTracker:
             self._final = "complete" if ok else "error"
             total = time.perf_counter() - self._start
             try:
-                self.status.update(label=f"{'Done' if ok else 'Failed'} · {total:.1f}s", state=self._final)
+                self.status.update(label=f"{t('turn.done') if ok else t('turn.failed')} · {total:.1f}s", state=self._final)
             except Exception:
                 pass
 
@@ -131,7 +131,7 @@ def run_assistant_turn(make_stream, footer=None, retry_question="auto"):
     friendly error with a retry icon and the real exception goes to the log.
     """
     with st.chat_message("assistant"):
-        status = st.status("Nexus is thinking…", expanded=False)
+        status = st.status(t("turn.thinking"), expanded=False)
         tracker = StepTracker(status)
         answer_box = st.empty()  # created BEFORE any slow call, so stale content is cleared at once
         text = ""
@@ -156,6 +156,6 @@ def render_steps(steps):
     """Collapsed 'Show steps' list under a saved assistant message."""
     if not steps:
         return
-    with st.expander("Show steps"):
+    with st.expander(t("turn.show_steps")):
         for s in steps:
             st.caption(f"{s['action']} — {s['seconds']}s")

@@ -18,6 +18,7 @@ Reliability design
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -38,6 +39,11 @@ MODEL = os.getenv("LLM_MODEL", "")
 # Query rewrite settings (env-overridable)
 REWRITE_TIMEOUT_S = float(os.getenv("REWRITE_TIMEOUT_S", "4"))
 REWRITE_MIN_CHARS = int(os.getenv("REWRITE_MIN_CHARS", "15"))
+
+# How much of THIS conversation the model sees (env-overridable; more = better memory, more tokens)
+HISTORY_MAX_MESSAGES = int(os.getenv("HISTORY_MAX_MESSAGES", "10"))
+HISTORY_MAX_CHARS = int(os.getenv("HISTORY_MAX_CHARS", "6000"))
+HISTORY_MSG_CHARS = int(os.getenv("HISTORY_MSG_CHARS", "1500"))
 
 _client = httpx.Client(
     base_url=BASE_URL,
@@ -343,6 +349,37 @@ def append_disclaimer(answer):
     return (answer or "") + DISCLAIMER
 
 
+def build_history(messages, current_question=None):
+    """Earlier turns of THIS conversation, as chat messages for the model.
+    messages: the app's st.session_state.messages. The question being answered right now (the
+    last user message) is left out, because it is sent separately. Newest turns win when the
+    budget runs out; the list always starts with a user turn."""
+    msgs = [m for m in (messages or []) if m.get("role") in ("user", "assistant") and str(m.get("content", "")).strip()]
+    if current_question is not None and msgs and msgs[-1]["role"] == "user" \
+            and str(msgs[-1]["content"]).strip() == str(current_question).strip():
+        msgs = msgs[:-1]
+    picked, used = [], 0
+    for m in reversed(msgs):
+        text = str(m["content"]).replace(DISCLAIMER.strip(), "")
+        text = re.sub(r"\[Source: Wikipedia\]\([^)]*\)", "", text).strip()
+        if len(text) > HISTORY_MSG_CHARS:
+            text = text[:HISTORY_MSG_CHARS] + "…"
+        if len(picked) >= HISTORY_MAX_MESSAGES or used + len(text) > HISTORY_MAX_CHARS:
+            break
+        picked.append({"role": m["role"], "content": text})
+        used += len(text)
+    picked.reverse()
+    while picked and picked[0]["role"] != "user":
+        picked.pop(0)
+    merged = []                                  # some APIs reject two messages of the same role in a row
+    for m in picked:
+        if merged and merged[-1]["role"] == m["role"]:
+            merged[-1]["content"] += "\n" + m["content"]
+        else:
+            merged.append(dict(m))
+    return merged
+
+
 TOOLS = [
     {"type": "function", "function": {"name": "search_docs", "description": "Search the uploaded documents for relevant passages. Use this for questions about the documents.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "search query"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "search_web", "description": "Search the web (DuckDuckGo) for current/external info. Use this FIRST for current events, news, real-time info, recent facts, or when the user explicitly asks to search the web/website/internet.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "search query"}}, "required": ["query"]}}},
@@ -368,7 +405,7 @@ def _run_tool(name, args, chunks, k):
         logger.info("tool %s finished in %.1fs", name, time.perf_counter() - t0)
 
 
-def _agentic_answer_impl(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None):
+def _agentic_answer_impl(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None, history=None):
     blocked, refusal = guard_input(question)
     if blocked:
         if on_progress:
@@ -382,14 +419,11 @@ def _agentic_answer_impl(question, chunks, k=5, on_progress=None, max_steps=8, m
             on_progress({"type": "rewrite_done", "rewritten": rq})
     else:
         rq = question
-    _sys = "You are a Q&A agent with tools. RULES: (1) If the user asks about current events, news, real-time info, recent facts, OR explicitly asks to search the web/website/internet → call search_web FIRST (do NOT answer from the documents). (2) For questions about the uploaded documents → call search_docs. (3) If search_docs returns irrelevant or insufficient info → call search_web. (4) For math → call calculator. (5) For encyclopedic facts → call wikipedia_search. (6) Cite sources. After gathering info, answer concisely. Use remembered user facts to personalize answers when relevant."
+    _sys = "You are a Q&A agent with tools. RULES: (1) If the user asks about current events, news, real-time info, recent facts, OR explicitly asks to search the web/website/internet → call search_web FIRST (do NOT answer from the documents). (2) For questions about the uploaded documents → call search_docs. (3) If search_docs returns irrelevant or insufficient info → call search_web. (4) For math → call calculator. (5) For encyclopedic facts → call wikipedia_search. (6) Cite sources. (7) If the question is about something said earlier in this conversation, or refers back to it (it, that, they, the previous answer), answer from the conversation history and do NOT search. After gathering info, answer concisely. Use remembered user facts to personalize answers when relevant."
     if memory:
         _sys += "\n\n## Remembered about this user (from past conversations)\n" + "\n".join(f"- {m}" for m in memory if m)
     _sys += _lang_line()
-    messages = [
-        {"role": "system", "content": _sys},
-        _user_message(question, rq),
-    ]
+    messages = [{"role": "system", "content": _sys}] + list(history or []) + [_user_message(question, rq)]
     gathered = []
     answer = None
     for step in range(1, max_steps + 1):
@@ -435,14 +469,14 @@ def _agentic_answer_impl(question, chunks, k=5, on_progress=None, max_steps=8, m
 
 
 @traceable(run_type="chain", name="agentic_answer", process_input=_trim_chunks)
-def agentic_answer(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None):
+def agentic_answer(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None, history=None):
     """Agentic RAG: [guard] -> [rewrite] -> native tool-calling loop -> faithfulness self-correction -> [disclaimer].
     Returns (answer, gathered, rewritten_query)."""
     with _retry_events(on_progress):
-        return _agentic_answer_impl(question, chunks, k, on_progress, max_steps, max_self_correct, memory)
+        return _agentic_answer_impl(question, chunks, k, on_progress, max_steps, max_self_correct, memory, history)
 
 
-def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_steps=8, memory=None):
+def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_steps=8, memory=None, history=None):
     blocked, refusal = guard_input(question)
     if blocked:
         if on_progress:
@@ -455,14 +489,11 @@ def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_ste
         rq = rewrite_query(question, chunks)
     else:
         rq = question
-    _sys = "You are a Q&A agent with tools. RULES: (1) If the user asks about current events, news, real-time info, recent facts, OR explicitly asks to search the web/website/internet \u2192 call search_web FIRST (do NOT answer from the documents). (2) For questions about the uploaded documents \u2192 call search_docs. (3) If search_docs returns irrelevant or insufficient info \u2192 call search_web. (4) For math \u2192 call calculator. (5) For encyclopedic facts \u2192 call wikipedia_search. (6) Cite sources. After gathering info, answer concisely. Use remembered user facts to personalize answers when relevant."
+    _sys = "You are a Q&A agent with tools. RULES: (1) If the user asks about current events, news, real-time info, recent facts, OR explicitly asks to search the web/website/internet \u2192 call search_web FIRST (do NOT answer from the documents). (2) For questions about the uploaded documents \u2192 call search_docs. (3) If search_docs returns irrelevant or insufficient info \u2192 call search_web. (4) For math \u2192 call calculator. (5) For encyclopedic facts \u2192 call wikipedia_search. (6) Cite sources. (7) If the question is about something said earlier in this conversation, or refers back to it (it, that, they, the previous answer), answer from the conversation history and do NOT search. After gathering info, answer concisely. Use remembered user facts to personalize answers when relevant."
     if memory:
         _sys += "\n\n## Remembered about this user (from past conversations)\n" + "\n".join(f"- {m}" for m in memory if m)
     _sys += _lang_line()
-    messages = [
-        {"role": "system", "content": _sys},
-        _user_message(question, rq),
-    ]
+    messages = [{"role": "system", "content": _sys}] + list(history or []) + [_user_message(question, rq)]
     gathered = []
     answer_parts = []
     for step in range(1, max_steps + 1):
@@ -505,9 +536,10 @@ def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_ste
             yield ch
 
 
-def agentic_answer_stream(question, chunks, k=5, on_progress=None, max_steps=8, memory=None):
+def agentic_answer_stream(question, chunks, k=5, on_progress=None, max_steps=8, memory=None, history=None):
     """Streaming agentic RAG: [guard] -> [rewrite] -> native tool-calling loop (streaming the
     final answer token-by-token via llm_chat_stream) -> [disclaimer]. Yields answer tokens.
+    history: earlier turns of this conversation, from build_history(); without it every question is answered in isolation.
     NOTE: faithfulness self-correction is skipped in stream mode (the loop's answer is final)."""
     with _retry_events(on_progress):
-        yield from _agentic_answer_stream_impl(question, chunks, k, on_progress, max_steps, memory)
+        yield from _agentic_answer_stream_impl(question, chunks, k, on_progress, max_steps, memory, history)

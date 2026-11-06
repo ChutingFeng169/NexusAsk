@@ -11,7 +11,9 @@ import json
 import os
 import re
 import threading
+from functools import wraps
 import streamlit as st
+import i18n
 import memory
 import agentic_rag
 
@@ -88,69 +90,65 @@ def _clear_with_confirm(label, key, action, message):
     """Click -> "This cannot be undone" with a red Yes -> do it, close the dialog, show `message`."""
     st.button(label, key=key, on_click=lambda k=key: st.session_state.update(_clr_pending=k))
     if st.session_state.get("_clr_pending") == key:
-        st.caption("This cannot be undone.")
+        st.caption(i18n.t("set.cannot_undo"))
         c1, c2 = st.columns(2)
-        if c1.button("Yes", key=f"yes_{key}"):
+        if c1.button(i18n.t("set.yes"), key=f"yes_{key}"):
             action()
             st.session_state.pop("_clr_pending", None)
             st.session_state["_flash"] = message
             st.rerun()
-        c2.button("Cancel", key=f"no_{key}",
+        c2.button(i18n.t("nav.cancel"), key=f"no_{key}",
                   on_click=lambda: st.session_state.pop("_clr_pending", None))
 
 
-@st.dialog("Settings")
+def _t_dialog(title_key, **dkw):
+    """@st.dialog, but the title is translated when the dialog OPENS. A plain
+    @st.dialog(i18n.t(...)) in an imported module would freeze the title in the
+    language of the very first run, so the decorator is re-applied on every call."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            st.dialog(i18n.t(title_key), **dkw)(fn)(*args, **kwargs)
+        return wrapper
+    return deco
+
+
+@_t_dialog("set.title")
 def settings_dialog(email, name):
     s = load_user_settings(email)
-    st.markdown("**Account**")
+    st.markdown(f"**{i18n.t('set.account')}**")
     st.caption(f"{name} · {email}")
-    st.markdown("**Display**")
-    dev = st.toggle("Show developer info under answers", value=s["dev_info"],
-                    help="Token count, cache status and the LangSmith trace.")
+    st.markdown(f"**{i18n.t('set.display')}**")
+    dev = st.toggle(i18n.t("set.dev_toggle"), value=s["dev_info"],
+                    help=i18n.t("set.dev_help"))
     if dev != s["dev_info"]:
         s["dev_info"] = dev
         save_user_settings(email, s)
         st.session_state["dev_info"] = dev
-    st.markdown("**Your data**")
-    st.caption("NexusAsk remembers facts from past chats to personalize answers.")
-    _clear_with_confirm("Clear long-term memory", "clr_mem", lambda: memory.clear_memory(email), "Long-term memory cleared")
-    _clear_with_confirm("Clear chat history", "clr_chats", lambda: _save_convs(email, []), "Chat history cleared")
-    _clear_with_confirm("Clear search history", "clr_search", lambda: clear_searches(email), "Search history cleared")
+    st.markdown(f"**{i18n.t('set.data')}**")
+    st.caption(i18n.t("set.memory_note"))
+    _clear_with_confirm(i18n.t("set.clear_memory"), "clr_mem", lambda: memory.clear_memory(email), i18n.t("set.memory_cleared"))
+    _clear_with_confirm(i18n.t("set.clear_chats"), "clr_chats", lambda: _save_convs(email, []), i18n.t("set.chats_cleared"))
+    _clear_with_confirm(i18n.t("set.clear_searches"), "clr_search", lambda: clear_searches(email), i18n.t("set.searches_cleared"))
 
 
-@st.dialog("Language")
+@_t_dialog("lang.title")
 def language_dialog(email):
     s = load_user_settings(email)
-    st.caption("The language NexusAsk answers in. The interface itself stays in English.")
+    st.caption(i18n.t("lang.note"))
     keys = list(LANGUAGES)
+    labels = {"auto": i18n.t("lang.auto"), "English": i18n.t("lang.en"), "Simplified Chinese": i18n.t("lang.zh")}
     choice = st.radio("Answer language", keys, index=keys.index(s["language"]),
-                      format_func=lambda k: LANGUAGES[k], label_visibility="collapsed")
-    if st.button("Save", key="lang_save", type="primary"):
+                      format_func=lambda k: labels[k], label_visibility="collapsed")
+    if st.button(i18n.t("nav.save"), key="lang_save", type="primary"):
         s["language"] = choice
         save_user_settings(email, s)
         st.rerun()
 
 
-@st.dialog("Get help", width="large")
+@_t_dialog("help.title", width="large")
 def help_dialog():
-    st.markdown("**Welcome to NexusAsk**")
-    st.write("An assistant that answers from your documents, the web and Wikipedia, and shows you what it did along the way.")
-    st.markdown("**What you can do**")
-    st.markdown(
-        "- **Ask anything.** NexusAsk picks the right tool by itself: your documents, web search, Wikipedia or a calculator.\n"
-        "- **Chat about your files.** Use the + next to the message box, or drag and drop. Supported: PDF, Word, PowerPoint, Excel, TXT, Markdown, CSV.\n"
-        "- **Find files again** in Library. Everything you upload is kept there.\n"
-        "- **Come back to a chat.** Chats are saved automatically. Use New chat to start fresh, the three dots on a chat to rename or delete it, and the magnifier to search every chat.\n"
-        "- **See how an answer was made.** Open Show steps under a reply to see each step and how long it took.\n"
-        "- **Get personalized answers.** NexusAsk remembers useful facts from your past chats. You can clear this in Settings."
-    )
-    st.markdown("**Good to know**")
-    st.markdown(
-        "- Mention a website or say \"search the web\" to make it look online first.\n"
-        "- Answers that use the web or Wikipedia end with a reminder that they are AI-generated, so check important facts.\n"
-        "- Very similar questions in the same session may be answered from a saved earlier answer, which is faster.\n"
-        "- Requests that contain certain sensitive words are declined."
-    )
+    st.markdown(i18n.t("help.body"))
 
 
 # ---- search history: saved on disk per user, kept until the user removes it ----
@@ -203,44 +201,44 @@ def _use_search(email, term):
     log_search(email, term)
 
 
-@st.dialog("Search chats", width="large")
+@_t_dialog("search.title", width="large")
 def search_dialog(email):
     convs = _load_convs(email)
     history = load_search_history(email)
-    q = st.text_input("Search", key="dlg_query", placeholder="Search chats (press Enter)",
+    q = st.text_input("Search", key="dlg_query", placeholder=i18n.t("search.placeholder"),
                       label_visibility="collapsed", on_change=_on_search_submit, args=(email,))
     ql = q.strip()
 
     if ql:
         results = find_chats(convs, ql)
-        st.markdown('<div class="search-label">Results</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="search-label">{i18n.t("search.results")}</div>', unsafe_allow_html=True)
         with st.container(key="search_results"):
             for idx, snip in results:
                 if st.button(convs[idx].get("title") or convs[idx].get("filename", "?"), key=f"srch_{idx}", use_container_width=True):
                     _open_chat(idx)
                 if snip: st.caption(snip)
             if not results:
-                st.caption("No matching chats")
+                st.caption(i18n.t("search.none"))
     else:
         if history:
             _h1, _h2 = st.columns([4, 1])
-            _h1.markdown('<div class="search-label">Recent searches</div>', unsafe_allow_html=True)
-            _h2.button("Clear all", key="srch_clear", on_click=clear_searches, args=(email,))
+            _h1.markdown(f'<div class="search-label">{i18n.t("search.recent_searches")}</div>', unsafe_allow_html=True)
+            _h2.button(i18n.t("search.clear_all"), key="srch_clear", on_click=clear_searches, args=(email,))
             with st.container(key="search_recent"):
                 for j, h in enumerate(history[:8]):
                     _r1, _r2 = st.columns([12, 1], vertical_alignment="center")
                     _r1.button(h, icon=":material/history:", key=f"srch_h_{j}", use_container_width=True,
                                on_click=_use_search, args=(email, h))
-                    _r2.button("Remove", icon=":material/close:", key=f"srch_x_{j}", help="Remove from history",
+                    _r2.button(i18n.t("search.remove"), icon=":material/close:", key=f"srch_x_{j}", help=i18n.t("search.remove"),
                                on_click=remove_search, args=(email, h))
         if convs:
-            st.markdown('<div class="search-label">Recent chats</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="search-label">{i18n.t("search.recent_chats")}</div>', unsafe_allow_html=True)
             with st.container(key="search_results"):
                 for idx in range(len(convs) - 1, max(len(convs) - 9, -1), -1):
                     if st.button(convs[idx].get("title") or convs[idx].get("filename", "?"), key=f"srch_r_{idx}", use_container_width=True):
                         _open_chat(idx)
         else:
-            st.caption("No conversations yet")
+            st.caption(i18n.t("nav.no_chats"))
 
 
 def render_sidebar(deps):
@@ -270,21 +268,21 @@ def render_sidebar(deps):
 
     with st.sidebar:
         with st.container(key="nav_search"):
-            if st.button("Search", icon=":material/search:", key="btn_search", help="Search chats"):
+            if st.button("Search", icon=":material/search:", key="btn_search", help=i18n.t("nav.search_help")):
                 search_dialog(user_email)
 
         with st.container(key="brand_wrap"):
             st.markdown('<div class="brand">NexusAsk</div>', unsafe_allow_html=True)
 
-        if st.button("New chat", icon=":material/add:", key="nav_new", use_container_width=True):
-            with st.spinner("Saving conversation…"):
+        if st.button(i18n.t("nav.new_chat"), icon=":material/add:", key="nav_new", use_container_width=True):
+            with st.spinner(i18n.t("nav.saving")):
                 archive_current()
             for key in ["messages", "doc_chunks", "uploaded_filenames", "processed_files", "file_raw_bytes", "applied_chunk_size", "applied_chunk_overlap", "preview_file", "review_conversation", "show_uploader", "library_view", "preview_from_library"]:
                 if key in st.session_state: del st.session_state[key]
             if "continuing_conversation_idx" in st.session_state: del st.session_state["continuing_conversation_idx"]
             st.rerun()
 
-        if st.button("Library", icon=":material/folder_open:", key="nav_library", use_container_width=True):
+        if st.button(i18n.t("nav.library"), icon=":material/folder_open:", key="nav_library", use_container_width=True):
             st.session_state.library_view = True
             if "review_conversation" in st.session_state: del st.session_state.review_conversation
             if "preview_file" in st.session_state: del st.session_state.preview_file
@@ -297,7 +295,7 @@ def render_sidebar(deps):
                 _title_in_progress.add(_cid)
                 threading.Thread(target=upgrade_title_async, args=(user_email, _cid), daemon=True).start()
 
-        st.markdown('<div class="side-label">Chats</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="side-label">{i18n.t("nav.chats")}</div>', unsafe_allow_html=True)
         if convs:
             _active_idx = st.session_state.get("review_conversation", st.session_state.get("continuing_conversation_idx"))
             for idx in range(len(convs) - 1, -1, -1):
@@ -312,22 +310,22 @@ def render_sidebar(deps):
                             st.rerun()
                     with _t2:
                         with st.popover("⋮", use_container_width=True, key=f"menu_{idx}"):
-                            if st.button("Delete", icon=":material/delete:", key=f"del_{idx}", use_container_width=True):
+                            if st.button(i18n.t("nav.delete"), icon=":material/delete:", key=f"del_{idx}", use_container_width=True):
                                 confirm_delete_conv(user_email, idx)
-                            if st.button("Rename", icon=":material/edit:", key=f"ren_{idx}", use_container_width=True):
+                            if st.button(i18n.t("nav.rename"), icon=":material/edit:", key=f"ren_{idx}", use_container_width=True):
                                 st.session_state["renaming_conv"] = idx
                                 st.rerun()
                     if st.session_state.get("renaming_conv") == idx:
                         _new = st.text_input("New name", value=_name, key=f"rn_{idx}", label_visibility="collapsed")
                         _rc1, _rc2 = st.columns(2)
-                        if _rc1.button("Save", key=f"rsv_{idx}"):
+                        if _rc1.button(i18n.t("nav.save"), key=f"rsv_{idx}"):
                             _convs = load_user_convs(user_email)
                             if idx < len(_convs): _convs[idx]["title"] = _new; save_user_convs(user_email, _convs)
                             del st.session_state["renaming_conv"]; st.rerun()
-                        if _rc2.button("Cancel", key=f"rnc_{idx}"):
+                        if _rc2.button(i18n.t("nav.cancel"), key=f"rnc_{idx}"):
                             del st.session_state["renaming_conv"]; st.rerun()
         else:
-            st.caption("No conversations yet")
+            st.caption(i18n.t("nav.no_chats"))
 
         with st.container(key="side_account"):
             _initial = (user_name[:1] or "?").upper()
@@ -336,15 +334,15 @@ def render_sidebar(deps):
             st.markdown(f"<style>.st-key-side_account{{--initial:'{_initial}'}}</style>", unsafe_allow_html=True)
             with st.popover(user_name, use_container_width=True):
                 st.caption(user_email)
-                if st.button("Settings", icon=":material/settings:", key="acct_settings", use_container_width=True):
+                if st.button(i18n.t("acct.settings"), icon=":material/settings:", key="acct_settings", use_container_width=True):
                     st.session_state.pop("_clr_pending", None)
                     settings_dialog(user_email, user_name)
-                if st.button("Language", icon=":material/language:", key="acct_language", use_container_width=True):
+                if st.button(i18n.t("acct.language"), icon=":material/language:", key="acct_language", use_container_width=True):
                     language_dialog(user_email)
-                if st.button("Get help", icon=":material/help:", key="acct_help", use_container_width=True):
+                if st.button(i18n.t("acct.help"), icon=":material/help:", key="acct_help", use_container_width=True):
                     help_dialog()
                 st.divider()
-                if st.button("Log out", icon=":material/logout:", key="acct_logout", use_container_width=True):
+                if st.button(i18n.t("acct.logout"), icon=":material/logout:", key="acct_logout", use_container_width=True):
                     confirm_logout(user_email)
 
 

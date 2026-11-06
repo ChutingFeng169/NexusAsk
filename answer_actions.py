@@ -18,6 +18,8 @@ import hashlib
 import streamlit as st
 import streamlit.components.v1 as components
 
+from i18n import t
+
 _COPY_HTML = """
 <style>
   html, body { margin: 0; background: transparent; }
@@ -27,7 +29,7 @@ _COPY_HTML = """
   svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
   .ok { display: none; }
 </style>
-<button id="b" title="Copy" aria-label="Copy">
+<button id="b" title="__COPY__" aria-label="__COPY__">
   <svg class="cp" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></svg>
   <svg class="ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
 </button>
@@ -54,7 +56,7 @@ _COPY_HTML = """
 def _copy_html(text):
     """The answer travels as base64, so no character in it can ever break out of the script."""
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    return _COPY_HTML.replace("__B64__", b64)
+    return _COPY_HTML.replace("__B64__", b64).replace("__COPY__", t("action.copy"))
 
 
 def _embed(html, height):
@@ -97,5 +99,5 @@ def render(idx, msg, email, is_last=False):
             _embed(_copy_html(text), 36)
         if is_last:
             with cols[1]:
-                st.button("Retry", icon=":material/refresh:", key=f"rt_{key}", help="Retry",
+                st.button(t("action.retry"), icon=":material/refresh:", key=f"rt_{key}", help=t("action.retry"),
                           on_click=_retry, args=(idx, key))
