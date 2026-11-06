@@ -24,7 +24,7 @@ section[data-testid="stMain"] { background: transparent !important; }
 /* chat box: a solid bar fixed to the bottom of the window, so answers never show through it */
 div[data-testid="stBottom"] { background: var(--bg) !important; }
 div[data-testid="stBottom"] > div { background: var(--bg) !important; max-width: 780px; margin: 0 auto; padding-bottom: 6px; }
-/* small grey disclaimer under the input, part of the fixed bar (the text comes from i18n.css_vars() in app.py) */
+/* small grey disclaimer under the input, part of the fixed bar (edit the text here) */
 div[data-testid="stBottom"]::after { content: var(--disclaimer, "NexusAsk can make mistakes. Please double check."); display: block; text-align: center;
   font-size: .75rem; color: var(--muted); padding: 0 12px 10px; }
 div[data-testid="stBottom"]::before { content: ""; position: absolute; left: 0; right: 0; top: -28px; height: 28px; pointer-events: none;
@@ -56,7 +56,6 @@ h1, h2, h3 { color: var(--text) !important; background: none !important;
 [data-testid="stStatus"] details, [data-testid="stExpander"] details { background: transparent !important;
   border: none !important; border-radius: 0 !important; box-shadow: none !important; }
 [data-testid="stStatus"] summary, [data-testid="stExpander"] summary { padding-left: 0 !important; color: var(--muted); font-size: .92rem; }
-
 /* ---------- sidebar ---------- */
 section[data-testid="stSidebar"] { background: var(--panel); border-right: 1px solid var(--line); }
 section[data-testid="stSidebar"] .stMarkdown h2, section[data-testid="stSidebar"] .stMarkdown h3 { color: var(--text) !important; }
@@ -80,7 +79,6 @@ section[data-testid="stSidebar"] [data-testid="stPopover"] > button svg { displa
 section[data-testid="stSidebar"] [data-testid="stPopoverBody"] { min-width: 0 !important; width: 150px !important; padding: 4px !important; gap: 2px !important; }
 [data-testid="stPopoverBody"] .stButton > button { background: transparent !important; color: var(--text) !important; border: 1px solid transparent !important; border-radius: 6px !important; text-align: left !important; width: 100% !important; box-shadow: none !important; }
 [data-testid="stPopoverBody"] .stButton > button:hover { border-color: var(--line) !important; background: rgba(0,0,0,.05) !important; }
-
 /* ---------- sidebar layout (Claude-like) ---------- */
 :root { --brand-lift: 3.2rem; }   /* NexusAsk title height: bigger number = higher up */
 
@@ -121,7 +119,6 @@ section[data-testid="stSidebar"] .st-key-nav_search .stButton button > * { displ
 section[data-testid="stSidebar"] .st-key-nav_search .stButton button::after { content: ""; display: block; width: 22px; height: 22px;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231f1e1d' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cline x1='16' y1='16' x2='20.5' y2='20.5'/%3E%3C/svg%3E") center / contain no-repeat; }
 section[data-testid="stSidebar"] .st-key-nav_search .stButton button:hover { background: rgba(0,0,0,.06) !important; }
-
 /* ---------- account bar: a slim strip fixed to the bottom of the browser window ---------- */
 /* makes the sidebar the reference box for "fixed" children, so the bar is exactly as wide as the sidebar */
 section[data-testid="stSidebar"] { will-change: transform; }
@@ -168,7 +165,6 @@ div[data-testid="stDialog"] .stTextInput input { height: 46px; font-size: 1rem; 
 [class*="st-key-srch_x_"] .stButton button { width: 34px; padding: 0 !important; justify-content: center !important; }
 [class*="st-key-srch_x_"] .stButton button p { display: none; }
 .search-label { font-size: .8rem; color: var(--muted); padding: 14px 4px 4px; }
-
 /* ---------- answer action icons: copy / thumbs / retry (small, grey) ---------- */
 [class*="st-key-act_"] { margin-top: 2px; }
 [class*="st-key-act_"] [data-testid="stHorizontalBlock"] { gap: 0 !important; align-items: center; }
@@ -194,6 +190,28 @@ div[data-testid="stDialog"] .stTextInput input { height: 46px; font-size: 1rem; 
 
 /* the invisible container of autoscroll.py takes no space */
 .st-key-autoscroll { height: 0; margin: 0 !important; padding: 0 !important; overflow: hidden; }
+/* ---------- retry icon: same size and hover colour as the copy icon (drawn with a mask) ---------- */
+[class*="st-key-act_"] .stButton button > *, [class*="st-key-fail_"] .stButton button > * { display: none !important; }
+[class*="st-key-act_"] .stButton button::after, [class*="st-key-fail_"] .stButton button::after { content: ""; display: block; width: 18px; height: 18px;
+  background-color: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-3-6.7L21 8'/%3E%3Cpath d='M21 3v5h-5'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-3-6.7L21 8'/%3E%3Cpath d='M21 3v5h-5'/%3E%3C/svg%3E") center / contain no-repeat; }
+
+/* ---------- copy icon under the user's own messages ---------- */
+[class*="st-key-ucopy_"] { display: flex; justify-content: flex-end; margin-top: 2px; }
+[class*="st-key-ucopy_"] iframe { display: block; }
+
+/* ---------- interrupted answer: quiet notice with a "Click to continue" button ---------- */
+[class*="st-key-intr_"] [data-testid="stHorizontalBlock"] { align-items: center; gap: .5rem !important; }
+[class*="st-key-intr_"] .intr-msg { color: var(--muted); font-size: .92rem; }
+[class*="st-key-intr_"] .stButton button { background: transparent !important; border: 1px solid var(--line) !important; border-radius: 999px;
+  height: 32px; min-height: 32px; padding: 0 14px !important; color: var(--text); font-size: .9rem; box-shadow: none !important; }
+[class*="st-key-intr_"] .stButton button:hover { border-color: var(--accent) !important; color: var(--accent); }
+
+/* ---------- stop: the send arrow becomes a square while an answer is being written ---------- */
+.st-key-stop_proxy_wrap { display: none !important; }                       /* hidden; clicked by autoscroll.py's script */
+html.nexus-generating [data-testid="stChatInputSubmitButton"] { visibility: hidden; }
+.nexus-stop { position: fixed; z-index: 1000; display: none; padding: 0; border: none; border-radius: 50%; cursor: pointer; background: var(--accent); }
+.nexus-stop::after { content: ""; position: absolute; left: 50%; top: 50%; width: 34%; height: 34%; transform: translate(-50%, -50%); background: #fff; border-radius: 3px; }
+.nexus-stop:hover { background: #a94f2f; }
 
 /* ---------- chat messages ---------- */
 [data-testid="stChatMessageAvatarUser"], [data-testid="stChatMessageAvatarAssistant"] { display: none !important; }
@@ -209,3 +227,7 @@ div[data-testid="stDialog"] .stTextInput input { height: 46px; font-size: 1rem; 
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stHorizontalBlock"] .stButton > button { background: transparent !important; color: var(--muted) !important; border: none !important; font-size: .8rem !important; padding: 2px 8px !important; box-shadow: none !important; }
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stHorizontalBlock"] > div { flex: 0 0 auto !important; width: auto !important; min-width: 0 !important; }
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stHorizontalBlock"] > div + div::before { content: "·"; color: var(--muted); margin-right: 2px; font-size: .8rem; }
+
+
+
+

@@ -14,7 +14,7 @@ NexusAsk has evolved from a simple Chroma-vector-store RAG into a full agentic a
 - **Real token-by-token streaming** — `llm_chat_stream` uses `stream=True` + SSE, yields `delta.content` live and reconstructs `delta.tool_calls` from the stream so the tool-calling loop keeps working mid-stream.
 - **One status box per answer** — a single collapsed `st.status` driven by `StepTracker` (step_ui.py) shows translated step labels — "Rewriting your question", "Thinking (step N)", "Searching your documents · 3 result(s)", "Answer ready" — each with its duration; the recorded steps re-render under a "Show steps" expander in the chat history.
 - **Answer actions** — small grey copy / retry icons under the newest answer (answer_actions.py): copy uses a tiny HTML iframe so the browser clipboard gets a real click; retry drops the answer, evicts it from the semantic cache and re-asks through the normal pending-question flow.
-- **Edit & resend** — edit any of your own messages; the rest of the thread is dropped and the answer regenerated from there.
+- **Stop & continue** — while an answer streams, the send arrow becomes a stop square; stopping keeps the partial answer as an "interrupted" message with a "Click to continue" button, and the model carries on from where it stopped.
 - **Failed answers** — one friendly red message + a red retry icon (the real traceback goes to the log); a stale unanswered question (failed answer or page refresh) shows the same retry row, so you're never stuck.
 - **Semantic cache** — local `paraphrase-multilingual-MiniLM-L12-v2` embeddings + cosine similarity; a repeated/paraphrased question ≥ 0.9 hits the cache (no LLM call) and streams the cached answer. Only used when there is no conversation history.
 - **Safety guard + conditional disclaimer** — sensitive words short-circuit the agent before any model call; a (translated) AI-generated disclaimer is appended only to answers that used web search or Wikipedia.
@@ -76,10 +76,10 @@ Two slow LLM jobs are moved off the click path so "New chat" is instant instead 
 The Streamlit header + bottom container are made transparent via CSS so the warm page background shows through behind the fixed chat bar, and the whole Claude-like look (sidebar, dialogs, icon rows, bubbles) is built on Streamlit's `data-testid` selectors in `style.css`. **Trade-off:** a Streamlit upgrade could rename those selectors; the styles are grouped per UI area so fixes stay local.
 
 ### 9. i18n is a plain dict + `t()` — called module-qualified in the big files
-`i18n.py` keeps both languages in one `STRINGS` dict; `t(key)` falls back current-language → English → the key itself. `app.py` and `sidebar_ui.py` call it **module-qualified** (`i18n.t(...)`) because both files already use `t` as a local variable (event types, text snippets) that would shadow a `from i18n import t` and cause `TypeError`s. **Trade-off:** slightly more verbose call sites; zero risk of shadowing.
+`i18n.py` keeps both languages in one `STRINGS` dict; `t(key)` falls back current-language → English → the key itself. `app.py` imports `t` (`from i18n import t`) for the sidebar block, but its older code keeps the **module-qualified** `i18n.t(...)` form because those functions use `t` as a local variable (event types, text snippets) that would shadow the import. **Trade-off:** two call styles coexist; zero risk of shadowing.
 
 ### 10. Dialog titles are re-decorated on every call
-`@st.dialog` freezes its title at decoration time. `app.py` re-executes on every run, so `@st.dialog(i18n.t(...))` there is always current — but an **imported** module (`sidebar_ui.py`) is decorated once per process, which would freeze its dialog titles in the very first run's language. sidebar_ui's `_t_dialog(title_key)` therefore re-applies `st.dialog(i18n.t(key))` on every call. **Trade-off:** one extra wrapper layer for the 4 sidebar dialogs; titles always follow the language.
+`@st.dialog` freezes its title at decoration time — a problem only for **imported** modules, which are decorated once per process (their titles would stay in the very first run's language). The sidebar's Settings / Language / Get help / Search dialogs therefore live **inside app.py**, which re-executes top-to-bottom on every run, so `@st.dialog(t(...))` titles are always in the current language. **Trade-off:** the sidebar code is inlined in app.py instead of a separate module; titles follow the language with no extra wrapper layer.
 
 ### 11. Auto-scroll is injected JS (no Streamlit primitive)
 Streamlit has no "scroll to bottom" API, so `autoscroll.py` injects a small idempotent script (`st.html(..., unsafe_allow_javascript=True)` on Streamlit ≥ 1.55, iframe fallback on older versions). A `MutationObserver` follows new/growing content; a capture-phase scroll listener stops following when you're more than 160 px from the bottom and resumes at the bottom; `force=True` (new question / retry) jumps to the bottom for ~1.8 s while the page settles. Its container is collapsed by `.st-key-autoscroll` in `style.css`. **Trade-off:** the script relies on the page's DOM structure (`section[data-testid="stMain"]`, …).
@@ -94,7 +94,7 @@ Before login there is no session identity, so the saved language can't be known 
 - **Pinned legacy stack:** `langchain==0.1.20`, `langchain-core==0.1.53`, `langsmith==0.1.147`.
 - **LLM transport:** all chat calls go to an OpenAI-compatible endpoint (the DeepSeek cpolar proxy) over **httpx** (streaming + non-streaming).
 - **Agent loop:** plain Python + native function-calling (`agentic_rag.py`; `max_steps=8`, `max_self_correct=2`). No LangGraph.
-- **UI modules:** `app.py` (auth, chat, Library/preview/review pages, confirm dialogs) + `sidebar_ui.py` (sidebar, Settings/Language/Get-help/Search dialogs, per-user settings) + `step_ui.py` (one status box per turn) + `answer_actions.py` (copy/retry) + `autoscroll.py` (auto-scroll) + `i18n.py` (English / Simplified Chinese).
+- **UI modules:** `app.py` (auth, sidebar + Settings/Language/Get-help/Search dialogs + per-user settings, chat, Library/preview/review pages, confirm dialogs) + `step_ui.py` (one status box per turn) + `answer_actions.py` (copy/retry) + `autoscroll.py` (auto-scroll) + `i18n.py` (English / Simplified Chinese).
 - **Theme:** `style.css` injected once per run by `app.py`, plus `.streamlit/config.toml`; texts that live inside CSS (the disclaimer) are fed per-run by `i18n.css_vars()` as CSS variables (`--disclaimer`).
 - **Storage:** JSON / file-backed (no external DB) — `users.json`, `conversations/`, `library/`, `memory/`, `user_settings/`, `search_history/`.
 
@@ -102,12 +102,11 @@ Before login there is no session identity, so the saved language can't be known 
 
 | File | Purpose |
 |------|---------|
-| `app.py` | Streamlit app: auth, i18n init + theme injection, chat UI, Library / preview / review pages, confirm dialogs, semantic cache, checkpoints, streaming wiring |
+| `app.py` | Streamlit app: auth, i18n init + theme injection, sidebar (search / New chat / Library / chats / account) + Settings / Language / Get help / Search dialogs, per-user settings + search history, chat UI, Library / preview / review pages, confirm dialogs, semantic cache, checkpoints, streaming wiring |
 | `agentic_rag.py` | Agent loop + 4 tools + streaming (`llm_chat`, `llm_chat_stream`, `agentic_answer`, `agentic_answer_stream`), guard, disclaimer, answer language |
-| `sidebar_ui.py` | Sidebar (brand, search, New chat, Library, chat list, account bar) + Settings / Language / Get help / Search dialogs + per-user settings on disk |
-| `step_ui.py` | One status box per assistant turn (`StepTracker`), "Show steps" history, failed-answer row + retry, stale-question retry |
-| `answer_actions.py` | The copy / retry icon row under the newest answer |
-| `autoscroll.py` | Keeps the chat scrolled to the newest text (follows streaming, respects scroll-up, force-jump on send/retry) |
+| `step_ui.py` | One status box per assistant turn (`StepTracker`), stop → "interrupted" answers with Click-to-continue, history rendering, "Show steps", failed-answer row + retry, stale-question retry |
+| `answer_actions.py` | The copy / retry icon row under the newest answer + the copy icon under user messages |
+| `autoscroll.py` | Keeps the chat scrolled to the newest text (follows streaming, respects scroll-up, force-jump on send/retry) + draws a stop square over the send arrow while an answer is written |
 | `i18n.py` | English / Simplified Chinese interface strings + `init` / `t` / `resolve` / `tool_label` / `css_vars` |
 | `memory.py` | Long-term memory: `extract_memory` / `load_memory` / `format_memory_prompt` / `clear_memory` |
 | `retrieval.py` | Hybrid document retrieval (BM25 + keyword, fused with RRF) |
@@ -119,9 +118,9 @@ Before login there is no session identity, so the saved language can't be known 
 | `simple_eval.py` | faithfulness (embedding similarity) |
 | `style.css` | the whole Claude-like theme (page frame, sidebar, search dialog, icon rows, confirms, bubbles, autoscroll container) |
 | `.streamlit/config.toml` | Streamlit theme (light, `#c15f3c` accent) + minimal toolbar |
-| `test_i18n.py` | i18n tests: en/zh key parity, placeholder parity, format safety, resolve + login-screen defaults, `t()`/`tool_label()` fallbacks |
 | `demo/` | standalone demo scripts (429 recovery, streaming, agentic run, timeout, async pipelines) |
 | `experiment/` | offline evaluation experiments (RAGAS, chunking) |
+| `test_i18n.py` | guards the translation table: same keys in both languages, matching `{placeholders}`, no empty texts, `resolve()` mapping |
 | `requirements.txt` | pinned dependencies |
 | `.env` | runtime config (keys, endpoint, tracing) |
 | `users.json` | accounts (bcrypt-hashed passwords) |
@@ -154,7 +153,7 @@ The first run downloads the local embedding model (`paraphrase-multilingual-Mini
 | `LANGSMITH_API_KEY` | LangSmith API key |
 | `LANGSMITH_PROJECT` | LangSmith project name (e.g. `nexusask`) |
 
-Key constants: `DEFAULT_CHUNK_SIZE=500`, `DEFAULT_CHUNK_OVERLAP=50`, `DEFAULT_K=4`, `SEMANTIC_CACHE_THRESHOLD=0.9`, `REAL_MODEL_TIMEOUT=15.0`, `MAX_CONTEXT_CHARS=12000`, `MAX_CONTEXT_TOKENS=3000`, `MAX_STORED_CHUNK_CHARS=500` (app.py); `MAX_STEPS=8`, `MAX_SELF_CORRECT=2` (agentic_rag.py); `MAX_MEMORIES=30` (memory.py); `MAX_SEARCHES=100` (sidebar_ui.py).
+Key constants: `DEFAULT_CHUNK_SIZE=500`, `DEFAULT_CHUNK_OVERLAP=50`, `DEFAULT_K=4`, `SEMANTIC_CACHE_THRESHOLD=0.9`, `REAL_MODEL_TIMEOUT=15.0`, `MAX_CONTEXT_CHARS=12000`, `MAX_CONTEXT_TOKENS=3000`, `MAX_STORED_CHUNK_CHARS=500` (app.py); `MAX_STEPS=8`, `MAX_SELF_CORRECT=2` (agentic_rag.py); `MAX_MEMORIES=30` (memory.py); `MAX_SEARCHES=100` (app.py).
 
 ## How it works — the agent pipeline
 
@@ -183,24 +182,24 @@ guard_input -> rewrite_query -> [tool-calling loop, ≤ 8 steps] -> answer -> di
 - **`llm_chat_stream(messages, tools, _out)`** — httpx `stream=True` + SSE; yields `delta.content`; accumulates `delta.tool_calls` into `_out`.
 - **`agentic_answer_stream(...)`** — generator; drives the loop; yields the final answer token-by-token; appends disclaimer/wiki.
 - **`agentic_answer_cached(...)`** — generator; cache hit → chunked stream; cache miss → real stream. The cache is consulted (and stored) only when there is no conversation history.
-- **`step_ui.run_assistant_turn`** renders ONE assistant message: a single **collapsed** status box ("Nexus is thinking…" / "Nexus 正在思考…"), then the answer streamed via `st.write_stream` into an `st.empty()` created *before* any slow call (so stale content clears at once), then the copy/retry row. `StepTracker` records `(label, seconds)` per step, shows "Done · Ns" / "Failed · Ns", and the saved steps re-render under a "Show steps" / "查看步骤" expander in the history.
+- **`step_ui.run_assistant_turn`** renders ONE assistant message — a single **collapsed** status box ("Nexus is thinking…" / "Nexus 正在思考…"), the answer streamed via `st.write_stream` into an `st.empty()` created *before* any slow call (so stale content clears at once), the copy/retry row — and **stores the finished answer in `st.session_state.messages` itself** (app.py no longer appends). While it runs, a hidden `stop_proxy` button exists: autoscroll.py draws a stop square over the send arrow that clicks it, the streamed-so-far text survives in `st.session_state["_gen"]`, and `step_ui.settle_interrupted()` (top of the chat view) turns it into an "interrupted" message; "Click to continue" re-asks with `CONTINUE_PROMPT` and `continue_idx`, appending to the partial. `StepTracker` records `(label, seconds)` per step and shows "Done · Ns" / "Failed · Ns"; history messages render via `step_ui.render_history_message` (text → actions or the interrupted notice → "Show steps" expander); user messages get a copy icon (`answer_actions.render_user`).
 - **Failures** — one friendly red error + retry icon (`step_ui._failure_row`); the real traceback only goes to the log. If the last message is an unanswered question (failed answer or page refresh), `render_unanswered` shows the same retry row.
 - **Auto-scroll** — `autoscroll.install(force=pending_question is not None)` runs once per run at the top of the chat view.
 
 ## Interface language (English / 中文)
 
-- Every user-facing string lives in `i18n.STRINGS` **in both languages** — `test_i18n.py` enforces that both tables have the same keys with identical `{placeholders}` and that every string formats cleanly.
+- Every user-facing string lives in `i18n.STRINGS` **in both languages** — both tables must carry the same keys with identical `{placeholders}` (a missing key silently falls back to English).
 - `i18n.init()` runs once per run at the top of `app.py`:
   - **logged in** → the account's Settings > Language from `user_settings/<email>.json`: `English`, `Simplified Chinese`, or `auto` (follows the browser via `st.context.locale`);
   - **login screen** → the setting saved for the email being typed in; `auto`/unknown/empty → **English**.
 - The same setting also drives the **answer language** (`agentic_rag.set_response_language`): `auto` lets the model match the language of your question; an explicit choice appends "Always write your final answer in …" to the system prompt.
 - `i18n.tool_label()` names the agent tools in the status line ("Searching your documents", "正在联网搜索", …); `i18n.css_vars()` feeds the disclaimer text to `style.css` as `--disclaimer`.
 - Not translated on purpose: the brand "NexusAsk", log lines, developer info (token counts, LangSmith trace), and the prompts sent to the model.
-- **Adding a string:** add the key to *both* `en` and `zh` (identical `{placeholders}`), call `t("key")` (or `i18n.t("key")` in app.py / sidebar_ui.py) — `pytest test_i18n.py` keeps the tables honest.
+- **Adding a string:** add the key to *both* `en` and `zh` (identical `{placeholders}`) and call `t("key")` (or `i18n.t("key")` in functions where `t` is a local).
 
 ## Auto-scroll
 
-`autoscroll.py` keeps the chat pinned to the newest text, like Claude / ChatGPT: while an answer streams in the page follows it; if you scroll up to read, the following stops (> 160 px from the bottom counts as "reading"); scrolling back to the bottom resumes it; sending a message or pressing retry jumps straight to the bottom and follows for ~1.8 s while the page settles (`force=True`). The script is idempotent (listeners registered once per window) and its container takes no space (`.st-key-autoscroll` in style.css).
+`autoscroll.py` keeps the chat pinned to the newest text, like Claude / ChatGPT: while an answer streams in the page follows it; if you scroll up to read, the following stops (> 160 px from the bottom counts as "reading"); scrolling back to the bottom resumes it; sending a message or pressing retry jumps straight to the bottom and follows for ~1.8 s while the page settles (`force=True`). While an answer is written it also draws a stop square (`.nexus-stop`, kept glued to the arrow by a 250 ms re-sync) over the send arrow; clicking it clicks step_ui's hidden `stop_proxy` button. The script is idempotent (listeners registered once per window) and its container takes no space (`.st-key-autoscroll` in style.css).
 
 ## UI theme
 
@@ -230,10 +229,10 @@ The question is embedded (local MiniLM); cosine vs cached questions. If similari
 ## Testing
 
 ```bash
-python -m pytest test_i18n.py -q
+python -m pytest test_i18n.py
 ```
 
-8 tests: en/zh key parity, no empty strings, placeholder parity, every string formats with its own placeholders, `resolve()` mapping, the login-screen English default, and `t()`/`tool_label()` translation + fallbacks.
+Guards the translation table: same keys in both languages, matching `{placeholders}`, no empty texts, and the `resolve()` mapping.
 
 ## Notes / limitations
 

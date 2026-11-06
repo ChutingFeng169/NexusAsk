@@ -7,6 +7,7 @@ The small grey icon row under an answer, like Claude / Gemini:  copy   retry
     answer_actions.render(msg_idx, msg, user_email, is_last)
 
 * Copy  : a tiny HTML iframe (the browser clipboard needs a real click inside the browser).
+          render_user() puts the same copy icon under the messages the user sent.
 * Retry : only on the newest answer. Drops that answer, removes its entry from the semantic
           cache (otherwise the same cached answer would come straight back), and asks the
           same question again through the normal pending_q flow in app.py.
@@ -14,6 +15,7 @@ Styling lives in style.css (search for "answer action icons").
 """
 import base64
 import hashlib
+import html as _html
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -29,7 +31,7 @@ _COPY_HTML = """
   svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
   .ok { display: none; }
 </style>
-<button id="b" title="__COPY__" aria-label="__COPY__">
+<button id="b" title="__LABEL__" aria-label="__LABEL__">
   <svg class="cp" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></svg>
   <svg class="ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
 </button>
@@ -56,15 +58,15 @@ _COPY_HTML = """
 def _copy_html(text):
     """The answer travels as base64, so no character in it can ever break out of the script."""
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    return _COPY_HTML.replace("__B64__", b64).replace("__COPY__", t("action.copy"))
+    return _COPY_HTML.replace("__B64__", b64).replace("__LABEL__", _html.escape(t("action.copy")))
 
 
-def _embed(html, height):
+def _embed(html, height, width="stretch"):
     """st.iframe on new Streamlit versions; components.html (removed in newer releases) on old ones."""
     if hasattr(st, "iframe"):
-        st.iframe(html, width="stretch", height=height)
+        st.iframe(html, width=width, height=height)
     else:
-        components.html(html, height=height)
+        components.html(html, height=height, width=None if width == "stretch" else width)
 
 
 def _question_before(msgs, idx):
@@ -101,3 +103,11 @@ def render(idx, msg, email, is_last=False):
             with cols[1]:
                 st.button(t("action.retry"), icon=":material/refresh:", key=f"rt_{key}", help=t("action.retry"),
                           on_click=_retry, args=(idx, key))
+
+
+def render_user(idx, msg):
+    """The copy icon under a message the user sent (right-aligned under the bubble)."""
+    text = str(msg.get("content", ""))
+    key = f"{idx}_{hashlib.md5(text.encode('utf-8')).hexdigest()[:8]}"
+    with st.container(key=f"ucopy_{key}"):
+        _embed(_copy_html(text), 36, width=36)

@@ -9,8 +9,7 @@ i18n.py — the interface language of NexusAsk (English / 中文).
     st.caption(t("chat.loaded", files=names, n=count))
 
 * The language comes from the user's Settings > Language (user_settings/<email>.json).
-  "auto" follows the browser's language after login; on the login screen app.py resolves
-  the email being typed in and passes auto="en", so "auto"/unknown emails default to English.
+  "auto" follows the browser's language; before login it is always auto.
 * Every key MUST exist in BOTH languages (test_i18n.py checks this, including {placeholders}).
 * Not translated on purpose: the brand name NexusAsk, log lines, developer-only info,
   prompts sent to the model.
@@ -87,7 +86,7 @@ STRINGS = {
         "chat.greeting": "Hi {name}, what's on your mind?",
         "chat.ask_anything": "Ask anything",
         "chat.ph_docs": "Ask a question about the documents…",
-        "chat.ph_any": "Ask anything",
+        "chat.ph_any": "Ask anything (Wikipedia + web search)…",
         "chat.followup": "Ask a follow-up…", "chat.continue_asking": "Continue asking:",
         "chat.loaded": "Loaded: {files} · {n} chunks",
         "chat.uploaded": "File uploaded! {n} file(s) loaded.",
@@ -120,7 +119,8 @@ STRINGS = {
         "turn.thinking": "Nexus is thinking…", "turn.done": "Done", "turn.failed": "Failed",
         "turn.error": "Nexus couldn't reach the model. Please try again.",
         "turn.show_steps": "Show steps",
-        "action.retry": "Retry", "action.copy": "Copy",
+        "turn.interrupted": "Response interrupted.", "turn.continue": "Click to continue",
+        "action.retry": "Retry", "action.copy": "Copy", "action.stop": "Stop",
         # ---- progress labels ----
         "status.rewriting": "Rewriting your question",
         "status.thinking_step": "Thinking (step {step})",
@@ -195,7 +195,7 @@ STRINGS = {
         "chat.greeting": "你好，{name}，有什么想聊的？",
         "chat.ask_anything": "问点什么吧",
         "chat.ph_docs": "就文档提问…",
-        "chat.ph_any": "随便问",
+        "chat.ph_any": "随便问（维基百科 + 联网搜索）…",
         "chat.followup": "继续提问…", "chat.continue_asking": "继续提问：",
         "chat.loaded": "已加载：{files} · {n} 个片段",
         "chat.uploaded": "文件已上传！已加载 {n} 个文件。",
@@ -228,7 +228,8 @@ STRINGS = {
         "turn.thinking": "Nexus 正在思考…", "turn.done": "完成", "turn.failed": "失败",
         "turn.error": "Nexus 暂时连不上模型，请重试。",
         "turn.show_steps": "查看步骤",
-        "action.retry": "重试", "action.copy": "复制",
+        "turn.interrupted": "回答已中断。", "turn.continue": "点击继续",
+        "action.retry": "重试", "action.copy": "复制", "action.stop": "停止",
         # ---- 进度文字 ----
         "status.rewriting": "正在改写问题",
         "status.thinking_step": "思考中（第 {step} 步）",
@@ -253,14 +254,13 @@ def _browser_lang():
     return "zh" if loc and str(loc).lower().startswith("zh") else "en"
 
 
-def resolve(setting, auto=None):
-    """Settings value ("auto" / "English" / "Simplified Chinese") -> "en" or "zh".
-    `auto` ("en"/"zh") overrides what "auto"/unknown resolves to; None follows the browser."""
+def resolve(setting):
+    """Settings value ("auto" / "English" / "Simplified Chinese") -> "en" or "zh"."""
     if setting == "English":
         return "en"
     if setting == "Simplified Chinese":
         return "zh"
-    return auto if auto in ("en", "zh") else _browser_lang()
+    return _browser_lang()
 
 
 def _read_setting(email):
@@ -275,11 +275,9 @@ def _read_setting(email):
         return "auto"
 
 
-def init(email=None, auto=None):
-    """Call once per run, at the top of app.py. `auto`: what "auto"/unknown emails
-    resolve to — None follows the browser (after login); the login screen passes
-    "en" (English by default there)."""
-    st.session_state[LANG_KEY] = resolve(_read_setting(email), auto=auto)
+def init(email=None):
+    """Call once per run, at the top of app.py (email is None before login)."""
+    st.session_state[LANG_KEY] = resolve(_read_setting(email))
     return st.session_state[LANG_KEY]
 
 

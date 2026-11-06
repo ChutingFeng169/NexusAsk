@@ -36,12 +36,11 @@ import agentic_rag
 import memory
 import retrieval
 import retry_helper
-import sidebar_ui
 import step_ui
 import answer_actions
 import autoscroll
 import i18n
-from types import SimpleNamespace
+from i18n import t
 from langsmith import Client as LangSmithClient
 
 DEFAULT_CHUNK_SIZE = 500
@@ -143,8 +142,9 @@ st.markdown(f"<style>{(Path(__file__).parent / 'style.css').read_text()}</style>
 if st.session_state.get("user_email"):
     i18n.init(st.session_state["user_email"])           # Settings > Language ("auto" follows the browser)
 else:
-    # login screen: the saved setting of the email being typed in; "auto"/unknown -> English
-    i18n.init(st.session_state.get("login_email") or st.session_state.get("reg_email"), auto="en")
+    # login screen: the saved setting of the email being typed in ("auto" follows the browser)
+    i18n.init(st.session_state.get("login_email") or st.session_state.get("reg_email"))
+agentic_rag.set_ui_language(i18n.lang())                # the agent's own texts (refusal, disclaimer) follow the UI language
 st.markdown(i18n.css_vars(), unsafe_allow_html=True)    # translated texts used by style.css (the disclaimer)
 _UNUSED_CSS = """
 <style>
@@ -869,14 +869,298 @@ chunk_overlap = DEFAULT_CHUNK_OVERLAP
 k = DEFAULT_K
 
 # ======================== Sidebar ========================
-sidebar_ui.render_sidebar(SimpleNamespace(
-    user_email=user_email, user_name=user_name,
-    archive_current=archive_current, load_user_convs=load_user_convs,
-    save_user_convs=save_user_convs, confirm_delete_conv=confirm_delete_conv,
-    confirm_clear_all=confirm_clear_all, confirm_logout=confirm_logout,
-    upgrade_title_async=upgrade_title_async, _title_in_progress=_title_in_progress,
-    BASE_DIR=BASE_DIR,
-))
+# The search icon opens a centre pop-up (st.dialog) with recent searches, recent chats and
+# results. Recent searches are saved on disk per user (search_history/<email>.json) and
+# stay until the user removes them (x on a row, or "Clear all").
+# Account menu: Settings, Language, Get help (onboarding), Log out. Settings and search
+# history are saved per user on disk (user_settings/, search_history/).
+def _snippet(c, ql):
+    """Short excerpt around the first message hit (empty if the match was only in the title)."""
+    for m in c.get("messages", []):
+        t = str(m.get("content", ""))
+        i = t.lower().find(ql)
+        if i >= 0:
+            a, b = max(0, i - 30), min(len(t), i + len(ql) + 50)
+            return ("…" if a else "") + t[a:b].replace("\n", " ") + ("…" if b < len(t) else "")
+    return ""
+
+
+def find_chats(convs, q, limit=20):
+    """[(index, snippet)] of chats whose title or any message contains q (newest first)."""
+    ql = (q or "").strip().lower()
+    if not ql:
+        return []
+    out = []
+    for idx in range(len(convs) - 1, -1, -1):
+        c = convs[idx]
+        title = (c.get("title") or c.get("filename", "")).lower()
+        snip = _snippet(c, ql)
+        if ql in title or snip:
+            out.append((idx, snip))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _open_chat(idx):
+    st.session_state.review_conversation = idx
+    for k in ("preview_file", "library_view", "preview_from_library"):
+        if k in st.session_state: del st.session_state[k]
+    st.rerun()   # full rerun also closes the dialog
+
+
+# ---- per-user settings (saved on disk): answer language + developer info ----
+SETTINGS_DIR = os.path.join(BASE_DIR, "user_settings")     # one JSON file per user
+DEFAULT_SETTINGS = {"language": "auto", "dev_info": False}
+LANGUAGES = {"auto": "lang.auto", "English": "lang.en", "Simplified Chinese": "lang.zh"}   # value -> translation key
+
+
+def _settings_file(email):
+    return os.path.join(SETTINGS_DIR, f"{re.sub(r'[^a-zA-Z0-9._-]', '_', email)}.json")
+
+
+def load_user_settings(email):
+    s = dict(DEFAULT_SETTINGS)
+    try:
+        with open(_settings_file(email), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            if data.get("language") in LANGUAGES: s["language"] = data["language"]
+            s["dev_info"] = bool(data.get("dev_info", False))
+    except (OSError, ValueError):
+        pass
+    return s
+
+
+def save_user_settings(email, s):
+    os.makedirs(SETTINGS_DIR, exist_ok=True)
+    with open(_settings_file(email), "w", encoding="utf-8") as f:
+        json.dump(s, f, ensure_ascii=False, indent=2)
+def _clear_with_confirm(label, key, action, message):
+    """Click -> "This cannot be undone" with a red Yes -> do it, close the dialog, show `message`."""
+    st.button(label, key=key, on_click=lambda k=key: st.session_state.update(_clr_pending=k))   # one prompt open at a time
+    if st.session_state.get("_clr_pending") == key:
+        st.caption(t("set.cannot_undo"))
+        c1, c2 = st.columns(2)
+        if c1.button(t("set.yes"), key=f"yes_{key}"):           # style.css makes the text red (key starts with yes_)
+            action()
+            st.session_state.pop("_clr_pending", None)
+            st.session_state["_flash"] = message         # shown as a toast after the dialog closes
+            st.rerun()                                   # full rerun: closes the dialog and refreshes the sidebar
+        c2.button(t("nav.cancel"), key=f"no_{key}",              # callback runs before the rerun, so the prompt just disappears
+                  on_click=lambda: st.session_state.pop("_clr_pending", None))
+
+
+@st.dialog(t("set.title"))
+def settings_dialog(email, name):
+    s = load_user_settings(email)
+    st.markdown(f"**{t('set.account')}**")
+    st.caption(f"{name} · {email}")
+    st.markdown(f"**{t('set.display')}**")
+    dev = st.toggle(t("set.dev_toggle"), value=s["dev_info"], help=t("set.dev_help"))
+    if dev != s["dev_info"]:
+        s["dev_info"] = dev
+        save_user_settings(email, s)
+        st.session_state["dev_info"] = dev
+    st.markdown(f"**{t('set.data')}**")
+    st.caption(t("set.memory_note"))
+    _clear_with_confirm(t("set.clear_memory"), "clr_mem", lambda: memory.clear_memory(email), t("set.memory_cleared"))
+    _clear_with_confirm(t("set.clear_chats"), "clr_chats", lambda: save_user_convs(email, []), t("set.chats_cleared"))
+    _clear_with_confirm(t("set.clear_searches"), "clr_search", lambda: clear_searches(email), t("set.searches_cleared"))
+
+
+@st.dialog(t("lang.title"))
+def language_dialog(email):
+    s = load_user_settings(email)
+    st.caption(t("lang.note"))
+    keys = list(LANGUAGES)
+    choice = st.radio(t("lang.title"), keys, index=keys.index(s["language"]),
+                      format_func=lambda k: t(LANGUAGES[k]), label_visibility="collapsed")
+    if st.button(t("nav.save"), key="lang_save", type="primary"):
+        s["language"] = choice
+        save_user_settings(email, s)
+        st.rerun()
+
+
+@st.dialog(t("help.title"), width="large")
+def help_dialog():
+    st.markdown(t("help.body"))
+# ---- search history: saved on disk per user, kept until the user removes it ----
+SEARCH_DIR = os.path.join(BASE_DIR, "search_history")   # one JSON file per user
+MAX_SEARCHES = 100                                      # safety cap so the file cannot grow forever
+
+
+def _search_file(email):
+    return os.path.join(SEARCH_DIR, f"{re.sub(r'[^a-zA-Z0-9._-]', '_', email)}.json")
+
+
+def load_search_history(email):
+    """Newest first. A missing or damaged file just means an empty history."""
+    try:
+        with open(_search_file(email), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [str(x) for x in data] if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def save_search_history(email, history):
+    os.makedirs(SEARCH_DIR, exist_ok=True)
+    with open(_search_file(email), "w", encoding="utf-8") as f:
+        json.dump(history[:MAX_SEARCHES], f, ensure_ascii=False, indent=2)
+
+
+def log_search(email, term):
+    """Put term at the top (no duplicates)."""
+    term = (term or "").strip()
+    if not term:
+        return
+    save_search_history(email, [term] + [x for x in load_search_history(email) if x != term])
+
+
+def remove_search(email, term):
+    save_search_history(email, [x for x in load_search_history(email) if x != term])
+
+
+def clear_searches(email):
+    save_search_history(email, [])
+def _on_search_submit(email):          # text_input on_change = the user pressed Enter / left the box
+    log_search(email, st.session_state.get("dlg_query", ""))
+
+
+def _use_search(email, term):          # clicked a recent search: fill the box and move it to the top
+    st.session_state["dlg_query"] = term
+    log_search(email, term)
+
+
+@st.dialog(t("search.title"), width="large")
+def search_dialog(email):
+    convs = load_user_convs(email)
+    history = load_search_history(email)          # always read from disk, so removals show at once
+    q = st.text_input(t("search.title"), key="dlg_query", placeholder=t("search.placeholder"),
+                      label_visibility="collapsed", on_change=_on_search_submit, args=(email,))
+    ql = q.strip()
+
+    if ql:
+        results = find_chats(convs, ql)
+        st.markdown(f'<div class="search-label">{t("search.results")}</div>', unsafe_allow_html=True)
+        with st.container(key="search_results"):
+            for idx, snip in results:
+                if st.button(convs[idx].get("title") or convs[idx].get("filename", "?"), key=f"srch_{idx}", use_container_width=True):
+                    _open_chat(idx)
+                if snip: st.caption(snip)
+            if not results:
+                st.caption(t("search.none"))
+    else:
+        if history:
+            _h1, _h2 = st.columns([4, 1])
+            _h1.markdown(f'<div class="search-label">{t("search.recent_searches")}</div>', unsafe_allow_html=True)
+            _h2.button(t("search.clear_all"), key="srch_clear", on_click=clear_searches, args=(email,))
+            with st.container(key="search_recent"):
+                for j, h in enumerate(history[:8]):
+                    _r1, _r2 = st.columns([12, 1], vertical_alignment="center")
+                    _r1.button(h, icon=":material/history:", key=f"srch_h_{j}", use_container_width=True,
+                               on_click=_use_search, args=(email, h))
+                    _r2.button(t("search.remove"), icon=":material/close:", key=f"srch_x_{j}", help=t("search.remove"),
+                               on_click=remove_search, args=(email, h))
+        if convs:
+            st.markdown(f'<div class="search-label">{t("search.recent_chats")}</div>', unsafe_allow_html=True)
+            with st.container(key="search_results"):
+                for idx in range(len(convs) - 1, max(len(convs) - 9, -1), -1):
+                    if st.button(convs[idx].get("title") or convs[idx].get("filename", "?"), key=f"srch_r_{idx}", use_container_width=True):
+                        _open_chat(idx)
+        else:
+            st.caption(t("nav.no_chats"))
+_flash = st.session_state.pop("_flash", None)                  # message left by a dialog action
+if _flash:
+    st.toast(_flash)
+
+_settings = load_user_settings(user_email)
+st.session_state["dev_info"] = _settings["dev_info"]          # app.py footers can read this
+agentic_rag.set_response_language(_settings["language"])      # answer language (Settings > Language)
+
+with st.sidebar:
+    # search toggle (style.css places this icon next to the collapse arrow)
+    with st.container(key="nav_search"):
+        if st.button(t("search.title"), icon=":material/search:", key="btn_search", help=t("nav.search_help")):
+            search_dialog(user_email)
+
+    with st.container(key="brand_wrap"):
+        st.markdown('<div class="brand">NexusAsk</div>', unsafe_allow_html=True)
+
+    if st.button(t("nav.new_chat"), icon=":material/add:", key="nav_new", use_container_width=True):
+        with st.spinner(t("nav.saving")):
+            archive_current()
+        for key in ["messages", "doc_chunks", "uploaded_filenames", "processed_files", "file_raw_bytes", "applied_chunk_size", "applied_chunk_overlap", "preview_file", "review_conversation", "show_uploader", "library_view", "preview_from_library"]:
+            if key in st.session_state: del st.session_state[key]
+        if "continuing_conversation_idx" in st.session_state: del st.session_state["continuing_conversation_idx"]
+        st.rerun()
+
+    if st.button(t("nav.library"), icon=":material/folder_open:", key="nav_library", use_container_width=True):
+        st.session_state.library_view = True
+        if "review_conversation" in st.session_state: del st.session_state.review_conversation
+        if "preview_file" in st.session_state: del st.session_state.preview_file
+        st.rerun()
+
+    convs = load_user_convs(user_email)
+    # lazy title upgrade: generate the real title in the background for any conversation still using a temp title
+    for _c in convs:
+        _cid = _c.get("id")
+        if _c.get("title_is_final") is False and _cid and _cid not in _title_in_progress:
+            _title_in_progress.add(_cid)
+            threading.Thread(target=upgrade_title_async, args=(user_email, _cid), daemon=True).start()
+
+    st.markdown(f'<div class="side-label">{t("nav.chats")}</div>', unsafe_allow_html=True)
+    if convs:
+        _active_idx = st.session_state.get("review_conversation", st.session_state.get("continuing_conversation_idx"))
+        for idx in range(len(convs) - 1, -1, -1):
+            _name = convs[idx].get("title") or convs[idx].get("filename", "?")
+            # the open chat gets a different container key so style.css can highlight it
+            _frame_key = f"convframe_active_{idx}" if idx == _active_idx else f"convframe_{idx}"
+            with st.container(border=False, key=_frame_key):
+                _t1, _t2 = st.columns([8, 1])
+                with _t1:
+                    if st.button(_name, key=f"conv_{idx}", use_container_width=True):   # full title; CSS adds the ellipsis
+                        st.session_state.review_conversation = idx
+                        if "preview_file" in st.session_state: del st.session_state.preview_file
+                        st.rerun()
+                with _t2:
+                    with st.popover("⋮", use_container_width=True, key=f"menu_{idx}"):
+                        if st.button(t("nav.delete"), icon=":material/delete:", key=f"del_{idx}", use_container_width=True):
+                            confirm_delete_conv(user_email, idx)
+                        if st.button(t("nav.rename"), icon=":material/edit:", key=f"ren_{idx}", use_container_width=True):
+                            st.session_state["renaming_conv"] = idx
+                            st.rerun()
+                if st.session_state.get("renaming_conv") == idx:
+                    _new = st.text_input(t("nav.rename"), value=_name, key=f"rn_{idx}", label_visibility="collapsed")
+                    _rc1, _rc2 = st.columns(2)
+                    if _rc1.button(t("nav.save"), key=f"rsv_{idx}"):
+                        _convs = load_user_convs(user_email)
+                        if idx < len(_convs): _convs[idx]["title"] = _new; save_user_convs(user_email, _convs)
+                        del st.session_state["renaming_conv"]; st.rerun()
+                    if _rc2.button(t("nav.cancel"), key=f"rnc_{idx}"):
+                        del st.session_state["renaming_conv"]; st.rerun()
+    else:
+        st.caption(t("nav.no_chats"))
+
+    # account area: pinned to the very bottom; click for the menu (Settings / Language / Get help / Log out)
+    with st.container(key="side_account"):
+        _initial = (user_name[:1] or "?").upper()
+        if not _initial.isalnum():
+            _initial = "?"
+        st.markdown(f"<style>.st-key-side_account{{--initial:'{_initial}'}}</style>", unsafe_allow_html=True)
+        with st.popover(user_name, use_container_width=True):
+            st.caption(user_email)
+            if st.button(t("acct.settings"), icon=":material/settings:", key="acct_settings", use_container_width=True):
+                st.session_state.pop("_clr_pending", None)
+                settings_dialog(user_email, user_name)
+            if st.button(t("acct.language"), icon=":material/language:", key="acct_language", use_container_width=True):
+                language_dialog(user_email)
+            if st.button(t("acct.help"), icon=":material/help:", key="acct_help", use_container_width=True):
+                help_dialog()
+            st.divider()
+            if st.button(t("acct.logout"), icon=":material/logout:", key="acct_logout", use_container_width=True):
+                confirm_logout(user_email)
 
 # ======================== Main ========================
 # (greeting "Hi! {name}, what's on your mind?" now shows only on the initial get-started screen)
@@ -953,7 +1237,6 @@ elif "review_conversation" in st.session_state:
                 lambda status: agentic_answer_cached(_pending, c.get("doc_chunks", []), DEFAULT_K, status, email=user_email),
                 footer=_footer)
             if a:
-                st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})
                 convs[idx]["messages"] = st.session_state.messages.copy()
                 save_user_convs(user_email, convs)
         q = st.chat_input(i18n.t("chat.followup"))
@@ -968,7 +1251,6 @@ elif "review_conversation" in st.session_state:
                 lambda status: agentic_answer_cached(q, c.get("doc_chunks", []), DEFAULT_K, status, email=user_email),
                 footer=_footer)
             if a:
-                st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})
                 convs[idx]["messages"] = st.session_state.messages.copy()
                 save_user_convs(user_email, convs)
             else:
@@ -985,10 +1267,12 @@ else:
     q = None
     _pending_flip = False
     _pq = st.session_state.pop("pending_q", None)
+    _pc = st.session_state.pop("pending_continue", None)
     if _pq is not None:
         q = _pq
         _pending_flip = True
-    autoscroll.install(force=_pq is not None)
+    autoscroll.install(force=_pq is not None or _pc is not None)
+    step_ui.settle_interrupted()      # keep the text of an answer cut off by Stop (or a new message)
     # ----- INITIAL state (no messages): centered greeting + centered chat box -----
     if not st.session_state.get("messages"):
         # check for a submitted question BEFORE rendering the centered input, so the flip is instant (no lingering)
@@ -1024,7 +1308,6 @@ else:
                             a, _steps = step_ui.run_assistant_turn(
                                 lambda status: agentic_answer_cached(edited, st.session_state.doc_chunks, k, status, email=user_email))
                             if a:
-                                st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})
                                 st.session_state.messages.extend(_after)
                                 if st.session_state.get("dev_info"):
                                     show_langsmith_trace()
@@ -1034,10 +1317,7 @@ else:
                             del st.session_state.editing_msg
                             st.rerun()
                 else:
-                    st.write(m["content"])
-                    if m["role"] == "assistant":
-                        answer_actions.render(msg_idx, m, user_email, is_last=(msg_idx == len(st.session_state.messages) - 1))
-                    step_ui.render_steps(m.get("steps"))
+                    step_ui.render_history_message(msg_idx, m, msg_idx == len(st.session_state.messages) - 1, user_email)
         # chat_input (bottom; only in the conversation view — the start page uses the centered text_input above)
         _chunks = st.session_state.get("doc_chunks", [])
         _ci = st.chat_input(i18n.t("chat.ph_docs") if _chunks else i18n.t("chat.ph_any"), accept_file='multiple', file_type=['pdf', 'docx', 'pptx', 'xlsx', 'xls', 'txt', 'md', 'csv'])
@@ -1045,7 +1325,7 @@ else:
             q = _ci.text if hasattr(_ci, 'text') else _ci
             uploaded_files = list(getattr(_ci, 'files', None) or [])
         # surface an unanswered question (failed answer / page refresh) when nothing is being generated
-        if not q and "review_conversation" not in st.session_state:
+        if not q and _pc is None and "review_conversation" not in st.session_state:
             step_ui.render_unanswered()
     # loaded annotation (one-shot: shows once right after an upload)
     if st.session_state.pop("_loaded_just_now", False):
@@ -1072,8 +1352,11 @@ else:
             if st.session_state.get("dev_info"):
                 st.caption(f"~{str_mod.count_tokens(text)} tokens · {'Cached' if st.session_state.get('_last_stream_cached') else 'Fresh'} · sim {st.session_state.get('_last_stream_sim', 0.0):.2f}")
                 show_langsmith_trace()
-        a, _steps = step_ui.run_assistant_turn(
+        step_ui.run_assistant_turn(
             lambda status: agentic_answer_cached(q, st.session_state.get("doc_chunks", []), k, status, email=user_email),
             footer=_footer)
-        if a:
-            st.session_state.messages.append({"role": "assistant", "content": a, "steps": _steps})
+    elif _pc is not None:
+        # "Click to continue": ask the model to carry on from where the answer was stopped
+        step_ui.run_assistant_turn(
+            lambda status: agentic_answer_cached(step_ui.CONTINUE_PROMPT, st.session_state.get("doc_chunks", []), k, status, email=user_email),
+            continue_idx=_pc)

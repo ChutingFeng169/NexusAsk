@@ -12,7 +12,12 @@ Keeps the chat scrolled to the newest text, like Claude / ChatGPT:
 
 Call it ONCE per run, at the top of the chat view (before the message history), with
 force=True on the runs where a new answer is generated (when pending_q was set).
-Needs no style.css changes.
+
+It also turns the chat box's send arrow into a STOP square while an answer is being written:
+step_ui.run_assistant_turn renders a hidden button (.st-key-stop_proxy_wrap) for exactly that
+time; this script draws a square button over the send arrow and, when it is clicked, clicks
+that hidden button, which makes Streamlit interrupt the run (step_ui.settle_interrupted then
+keeps the text written so far). Styles for both live in style.css.
 """
 import inspect
 import time
@@ -59,6 +64,42 @@ _JS = r"""
     // new / growing content: follow it
     new w.MutationObserver(schedule).observe(doc.body, { childList: true, subtree: true, characterData: true });
   }
+
+  // ---- stop square over the send arrow while an answer is being written ----
+  const X = (w.__nexusStop = w.__nexusStop || { installed: false, btn: null });
+  function proxy() {                                   // the hidden Streamlit button, only while generating
+    const wrap = doc.querySelector('.st-key-stop_proxy_wrap');
+    if (!wrap || (wrap.closest && wrap.closest('[data-stale="true"]'))) return null;
+    return wrap.querySelector('button');
+  }
+  function syncStop() {
+    const generating = !!proxy();
+    doc.documentElement.classList.toggle('nexus-generating', generating);
+    if (!X.btn) return;
+    const send = doc.querySelector('[data-testid="stChatInputSubmitButton"]');
+    if (!generating || !send) { X.btn.style.display = 'none'; return; }
+    const r = send.getBoundingClientRect();
+    if (!r.width) { X.btn.style.display = 'none'; return; }
+    X.btn.style.display = 'block';
+    X.btn.style.left = r.left + 'px';  X.btn.style.top = r.top + 'px';
+    X.btn.style.width = r.width + 'px'; X.btn.style.height = r.height + 'px';
+  }
+  if (!X.installed) {
+    X.installed = true;
+    X.btn = doc.createElement('button');
+    X.btn.type = 'button';
+    X.btn.className = 'nexus-stop';
+    X.btn.setAttribute('aria-label', 'Stop');
+    X.btn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const p = proxy();
+      if (p) p.click();
+    });
+    doc.body.appendChild(X.btn);
+    new w.MutationObserver(syncStop).observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-stale'] });
+    w.setInterval(syncStop, 250);                      // keeps the square glued to the arrow (resizes, growing text box)
+  }
+  syncStop();
 
   // a new question or a retry: jump to the bottom and follow for a moment while the page settles
   if (FORCE !== "0" && S.token !== FORCE) {

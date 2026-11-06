@@ -78,6 +78,14 @@ def _retry_to_progress(on_progress):
     return convert
 
 
+def set_response_language(lang):
+    """Per-session answer language (thread-local). None / "auto" = match the user's question."""
+    _tls.lang = lang if lang and lang != "auto" else None
+
+
+def _lang_line():
+    lang = getattr(_tls, "lang", None)
+    return f"\n\nAlways write your final answer in {lang}." if lang else ""
 @contextmanager
 def _retry_events(on_progress):
     """While active, retries inside llm_chat / llm_chat_stream are reported via on_progress."""
@@ -125,8 +133,6 @@ def llm_chat(messages, tools=None, temperature=0, timeout=None, max_attempts=Non
     msg = rlf.retry_call(_post_chat, payload, timeout, max_attempts=max_attempts, on_progress=_emit_retry)
     logger.info("llm_chat ok in %.1fs", time.perf_counter() - t0)
     return {"content": msg.get("content") or "", "tool_calls": msg.get("tool_calls")}
-
-
 def _stream_once(messages, tools, temperature, _out, timeout=None):
     """One streaming attempt. Yields content deltas; fills _out['tool_calls'] at the end."""
     payload = {"model": MODEL, "messages": messages, "temperature": temperature, "stream": True, "stream_options": {"include_usage": True}}
@@ -201,20 +207,6 @@ def llm_chat_stream(messages, tools=None, temperature=0, _out=None):
             ev_type = "rate_limited" if isinstance(exc, rlf.RateLimitError) else "retrying"
             _emit_retry({"type": ev_type, "n": attempt, "total": total, "wait": wait, "reason": rlf._reason(exc)})
             rlf._SLEEP(wait)
-
-
-# ---------------- response language (thread-local) ----------------
-
-def set_response_language(lang):
-    """Per-session answer language (thread-local). None / "auto" = match the user's question."""
-    _tls.lang = lang if lang and lang != "auto" else None
-
-
-def _lang_line():
-    lang = getattr(_tls, "lang", None)
-    return f"\n\nAlways write your final answer in {lang}." if lang else ""
-
-
 # ---------------- tools ----------------
 @traceable(run_type="tool", name="search_docs", process_input=_trim_chunks)
 def search_docs(query, chunks, k=5):
@@ -271,8 +263,6 @@ def wikipedia_search(query, sentences=3):
         return {"title": query, "summary": summary, "url": url}
     except Exception as e:
         return {"error": f"wikipedia failed: {e}"}
-
-
 # ---------------- agentic steps ----------------
 def should_rewrite(question, chunks):
     """Rewriting only helps document retrieval. Skip it when there are no uploaded documents
@@ -327,26 +317,43 @@ def faithfulness_check(answer, context):
         return 0.0
     ctx = " ".join(context) if isinstance(context, list) else str(context)
     return simple_similarity(answer, ctx)
-
-
 # ---------------- safety (before_model guard / after_model disclaimer) ----------------
 SENSITIVE_WORDS = ["暴力", "色情", "自杀", "恐怖", "毒品", "炸弹", "杀人", "bomb", "kill", "terror"]
+
+# Interface language of this session ("en" / "zh"), set by the app on every run (see set_ui_language).
+_REFUSALS = {"en": 'Sorry, for safety I can\'t handle requests containing "{word}".',
+             "zh": "抱歉，为了安全，不能处理包含「{word}」的请求。"}
+_DISCLAIMERS = {"en": "\n\nAI-generated answer, for reference only.",
+                "zh": "\n\n本回答由AI生成，仅供参考。"}
+
+
+def set_ui_language(lang):
+    """"en" or "zh": the language of the texts this module adds to answers (disclaimer, refusal)."""
+    _tls.ui_lang = lang if lang in _DISCLAIMERS else "en"
+
+
+def _ui_lang():
+    return getattr(_tls, "ui_lang", "en")
 
 
 def guard_input(text):
     """before_model: if a sensitive word is in the input, short-circuit (jump_to=end)."""
     for w in SENSITIVE_WORDS:
         if w in (text or ""):
-            return True, f"抱歉，为了安全，不能处理包含「{w}」的请求。"
+            return True, _REFUSALS[_ui_lang()].format(word=w)
     return False, ""
 
 
-DISCLAIMER = ""  # moved to a CSS element below the chat input (see style.css)
+DISCLAIMER = _DISCLAIMERS["zh"]          # kept for old imports; the live text comes from disclaimer_text()
+
+
+def disclaimer_text():
+    return _DISCLAIMERS[_ui_lang()]
 
 
 def append_disclaimer(answer):
     """after_model: append a disclaimer to the answer."""
-    return (answer or "") + DISCLAIMER
+    return (answer or "") + disclaimer_text()
 
 
 def build_history(messages, current_question=None):
@@ -360,7 +367,9 @@ def build_history(messages, current_question=None):
         msgs = msgs[:-1]
     picked, used = [], 0
     for m in reversed(msgs):
-        text = str(m["content"]).replace(DISCLAIMER.strip(), "")
+        text = str(m["content"])
+        for known in ("\u26a0\ufe0f \u672c\u56de\u7b54\u7531AI\u751f\u6210\uff0c\u4ec5\u4f9b\u53c2\u8003\u3002", *_DISCLAIMERS.values()):   # old emoji version first (it contains the new one)
+            text = text.replace(known.strip(), "")
         text = re.sub(r"\[Source: Wikipedia\]\([^)]*\)", "", text).strip()
         if len(text) > HISTORY_MSG_CHARS:
             text = text[:HISTORY_MSG_CHARS] + "…"
@@ -378,8 +387,6 @@ def build_history(messages, current_question=None):
         else:
             merged.append(dict(m))
     return merged
-
-
 TOOLS = [
     {"type": "function", "function": {"name": "search_docs", "description": "Search the uploaded documents for relevant passages. Use this for questions about the documents.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "search query"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "search_web", "description": "Search the web (DuckDuckGo) for current/external info. Use this FIRST for current events, news, real-time info, recent facts, or when the user explicitly asks to search the web/website/internet.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "search query"}}, "required": ["query"]}}},
@@ -403,15 +410,14 @@ def _run_tool(name, args, chunks, k):
         return f"unknown tool: {name}"
     finally:
         logger.info("tool %s finished in %.1fs", name, time.perf_counter() - t0)
-
-
 def _agentic_answer_impl(question, chunks, k=5, on_progress=None, max_steps=8, max_self_correct=2, memory=None, history=None):
+    # before_model guard (jump_to=end on sensitive words)
     blocked, refusal = guard_input(question)
     if blocked:
         if on_progress:
             on_progress({"type": "blocked", "word": refusal})
         return refusal, [], question
-    if should_rewrite(question, chunks):
+    if should_rewrite(question, chunks) and not history:
         if on_progress:
             on_progress({"type": "rewrite"})
         rq = rewrite_query(question, chunks)
@@ -474,8 +480,6 @@ def agentic_answer(question, chunks, k=5, on_progress=None, max_steps=8, max_sel
     Returns (answer, gathered, rewritten_query)."""
     with _retry_events(on_progress):
         return _agentic_answer_impl(question, chunks, k, on_progress, max_steps, max_self_correct, memory, history)
-
-
 def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_steps=8, memory=None, history=None):
     blocked, refusal = guard_input(question)
     if blocked:
@@ -483,7 +487,7 @@ def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_ste
             on_progress({"type": "blocked", "word": refusal})
         yield refusal
         return
-    if should_rewrite(question, chunks):
+    if should_rewrite(question, chunks) and not history:
         if on_progress:
             on_progress({"type": "rewrite"})
         rq = rewrite_query(question, chunks)
@@ -527,7 +531,7 @@ def _agentic_answer_stream_impl(question, chunks, k=5, on_progress=None, max_ste
         yield answer
     _uncertain = any(g["tool"] in ("search_web", "wikipedia_search") for g in gathered)
     if _uncertain:
-        for ch in DISCLAIMER:
+        for ch in disclaimer_text():
             yield ch
     _wiki_url = next((g["result"].get("url") for g in gathered if g["tool"] == "wikipedia_search" and isinstance(g["result"], dict) and g["result"].get("url")), None)
     if _wiki_url:
